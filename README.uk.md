@@ -18,6 +18,9 @@ Telegram-бот, який повідомляє, коли **світло зник
 > (MIT) та `pybluetti`, разом із вбудованим публічним OAuth-клієнтом інтеграції. BLUETTI його
 > не підтримує офіційно, і він може перестати працювати, якщо BLUETTI змінить хмару.
 
+> **Створено за допомогою ШІ.** Код написав Claude ([Claude Code](https://claude.com/claude-code)
+> від Anthropic) під керівництвом і з рев'ю мейнтейнера.
+
 **Підтримувані станції:** будь-яка, що є в застосунку BLUETTI з Wi-Fi і хмарою. Перевірено на
 **Premium 200 V2 (PR200V2)**. Інші моделі можуть називати поля інакше або не мати їх; невідомі
 значення вважаються «невідомо», бот через них не падає. Будь ласка, надішліть вивід `check` для
@@ -45,21 +48,27 @@ git clone https://github.com/yevhenii-rosliakov/bluetti-telegram-notifier.git
 cd bluetti-telegram-notifier
 cp .env.example .env        # заповніть TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_IDS, TZ, BOT_LANGUAGE
 
-docker compose run --rm bot login   # вхід у BLUETTI (див. наступний розділ)
+make login    # створити ./data і увійти в BLUETTI (див. наступний розділ)
 # вставте надруковані рядки BLUETTI_* у .env
 
-docker compose run --rm bot check   # необов'язково: що бачить бот і що він вирішує
-docker compose up -d
-docker compose logs -f
+make check    # необов'язково: що бачить бот і що він вирішує
+make up
+make logs
 ```
+
+`make` без аргументів показує всі команди: `restart` (перезібрати образ і перестворити стек),
+`update` (`git pull` + restart), `rebuild` (без кешу, свіжий базовий образ), `down`, `ps`,
+`backup` / `restore`, `test`, `lint`. Можна й просто `docker compose`; тоді один раз виконайте
+`make data` (або `sudo chown 10001:10001 data`), щоб користувач контейнера міг писати в `./data`.
 
 Бот надішле «Бот запущено …» і відповідатиме на `/status`. Образи публікуються для
 `linux/amd64` і `linux/arm64` (Raspberry Pi 4/5 з 64-бітною ОС):
 `ghcr.io/yevhenii-rosliakov/bluetti-grid-bot`.
 
 Токени, вибраний gateway, останній стан станції та історія відключень зберігаються у файлі
-SQLite у томі `bot-data` (`/data`). Не видаляйте цей том: refresh-токен оновлюється, і
-найновіший зберігається тільки там.
+SQLite у теці `./data` (змонтована як `/data`). Не видаляйте цю теку: refresh-токен
+оновлюється, і найновіший зберігається тільки там. Вона в `.gitignore`; файли належать UID 10001
+з правами 0600, тому на Linux копіюйте її через `make backup` (або `sudo`).
 
 ## Як отримати токен BLUETTI
 
@@ -262,9 +271,9 @@ kubectl -n bluetti exec -it deploy/bluetti-grid-bot -- bluetti-grid-bot login
 
 ## Перенесення на інший хост
 
-Увесь стан зберігається в одній базі SQLite на томі `/data`: токени BLUETTI (refresh-токен
+Увесь стан зберігається в одній базі SQLite у `./data`: токени BLUETTI (refresh-токен
 оновлюється при кожному використанні), вибраний шлюз, стан детектора для кожної станції та історія
-відключень. Щоб перенести бота, скопіюйте цей том разом із `.env`.
+відключень. Щоб перенести бота, скопіюйте цю теку разом із `.env`.
 
 Запускайте **лише один екземпляр одночасно**. Дві копії робитимуть недійсними токени одна одної, а
 Telegram дозволяє лише одне опитування на токен бота.
@@ -272,31 +281,28 @@ Telegram дозволяє лише одне опитування на токен
 На старому хості:
 
 ```bash
-docker compose down                       # зупинити бота; том залишається
-docker volume ls | grep bot-data          # напр. bluetti-telegram-notifier_bot-data
-docker run --rm -v <volume>:/data -v "$PWD":/backup alpine \
-  tar czf /backup/bot-data.tgz -C /data .
-scp bot-data.tgz .env docker-compose.yml newhost:~/bluetti/
+make backup                                # зупинити, заархівувати ./data у bot-data.tgz, запустити
+make down                                  # потім зупинити остаточно
+scp bot-data.tgz .env newhost:~/
 ```
 
-На новому хості, у `~/bluetti`:
+На новому хості:
 
 ```bash
-docker compose up --no-start              # створити том, не запускаючи бота
-docker volume ls | grep bot-data          # назва залежить від назви теки
-docker run --rm -v <volume>:/data -v "$PWD":/backup alpine \
-  tar xzf /backup/bot-data.tgz -C /data   # від root, файли залишаються власністю UID 10001
-docker compose up -d
-docker compose logs -f                    # перевірити, що бот увійшов і опитує станцію
-rm bot-data.tgz                           # в архіві є токени
+git clone https://github.com/yevhenii-rosliakov/bluetti-telegram-notifier.git
+cd bluetti-telegram-notifier
+mv ~/.env ~/bot-data.tgz .
+make restore                               # заповнити ./data з bot-data.tgz і запустити бота
+make logs                                  # перевірити, що бот увійшов і опитує станцію
+rm bot-data.tgz                            # в архіві є токени
 ```
 
-Зупиняйте бота перед копіюванням, щоб база (і її файл `-wal`) була цілісною, і не запускайте стару
-копію знову.
+`make backup` зупиняє бота на час копіювання, щоб база (і її файл `-wal`) була цілісною. Не
+запускайте стару копію знову.
 
-Можна й почати з нуля: взяти лише `.env` і знову виконати `docker compose run --rm bot login`, бо
-`BLUETTI_REFRESH_TOKEN` у `.env`, найімовірніше, вже застарів. Історія відключень втратиться, а
-«світло є з» почне відлік від першого опитування.
+Можна й почати з нуля: взяти лише `.env` і знову виконати `make login`, бо `BLUETTI_REFRESH_TOKEN`
+у `.env`, найімовірніше, вже застарів. Історія відключень втратиться, а «світло є з» почне відлік
+від першого опитування.
 
 У Helm: зменшіть Deployment до 0, скопіюйте вміст PVC на PVC нового кластера (власник — UID
 10001), потім поверніть до 1.

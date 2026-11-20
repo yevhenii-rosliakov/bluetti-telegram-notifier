@@ -18,6 +18,9 @@ Commands: `/status`, `/history [n]`, `/help`. Several stations per account are s
 > (MIT) and `pybluetti`, including the integration's built-in public OAuth client. It is not
 > endorsed by BLUETTI and may break if BLUETTI changes its cloud.
 
+> **Built with AI.** The code is written by Claude (Anthropic's
+> [Claude Code](https://claude.com/claude-code)) under the direction and review of the maintainer.
+
 **Supported stations:** anything that shows up in the BLUETTI app with Wi-Fi and cloud support.
 Tested on a **Premium 200 V2 (PR200V2)**. Other models may name or omit fields differently;
 unknown values are treated as "unknown", never as a crash. Please report what `check` prints
@@ -63,21 +66,27 @@ git clone https://github.com/yevhenii-rosliakov/bluetti-telegram-notifier.git
 cd bluetti-telegram-notifier
 cp .env.example .env        # set TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_IDS, TZ, BOT_LANGUAGE
 
-docker compose run --rm bot login   # sign in to BLUETTI (see next section)
+make login    # create ./data, sign in to BLUETTI (see next section)
 # paste the printed BLUETTI_* lines into .env
 
-docker compose run --rm bot check   # optional: see what the bot sees and decides
-docker compose up -d
-docker compose logs -f
+make check    # optional: see what the bot sees and decides
+make up
+make logs
 ```
+
+Run `make` to list every target: `restart` (rebuild the image and recreate the stack),
+`update` (`git pull` + restart), `rebuild` (no cache, fresh base image), `down`, `ps`,
+`backup` / `restore`, `test`, `lint`. Plain `docker compose` works too; then run `make data`
+once (or `sudo chown 10001:10001 data`) so the container user can write to `./data`.
 
 The bot sends "Bot started …" and answers `/status`. Images are published for
 `linux/amd64` and `linux/arm64` (Raspberry Pi 4/5 with a 64-bit OS) at
 `ghcr.io/yevhenii-rosliakov/bluetti-grid-bot`.
 
 Tokens, the chosen gateway, the last station state and the outage history live in a SQLite
-file in the `bot-data` volume (`/data`). Keep that volume: the refresh token rotates and
-the newest one is only stored there.
+file in `./data` (mounted at `/data`). Keep that folder: the refresh token rotates and
+the newest one is only stored there. It is git-ignored; its files are owned by UID 10001
+with mode 0600, so on Linux use `make backup` (or `sudo`) to copy it.
 
 ## Getting the BLUETTI token
 
@@ -331,9 +340,9 @@ spec:
 
 ## Moving to another host
 
-All state lives in one SQLite database on the `/data` volume: the rotating BLUETTI tokens, the
-cached gateway, the per-station detector state and the outage history. To move the bot, copy that
-volume together with `.env`.
+All state lives in one SQLite database in `./data`: the rotating BLUETTI tokens, the cached
+gateway, the per-station detector state and the outage history. To move the bot, copy that
+folder together with `.env`.
 
 Run **one instance at a time**. BLUETTI rotates the refresh token on every use, so two copies
 invalidate each other's login, and Telegram allows only one poller per bot token.
@@ -341,31 +350,28 @@ invalidate each other's login, and Telegram allows only one poller per bot token
 On the old host:
 
 ```bash
-docker compose down                       # stop the bot; the volume is kept
-docker volume ls | grep bot-data          # e.g. bluetti-telegram-notifier_bot-data
-docker run --rm -v <volume>:/data -v "$PWD":/backup alpine \
-  tar czf /backup/bot-data.tgz -C /data .
-scp bot-data.tgz .env docker-compose.yml newhost:~/bluetti/
+make backup                                # stop, archive ./data to bot-data.tgz, start again
+make down                                  # then stop it for good
+scp bot-data.tgz .env newhost:~/
 ```
 
-On the new host, in `~/bluetti`:
+On the new host:
 
 ```bash
-docker compose up --no-start              # create the volume without starting the bot
-docker volume ls | grep bot-data          # the name is derived from the directory name
-docker run --rm -v <volume>:/data -v "$PWD":/backup alpine \
-  tar xzf /backup/bot-data.tgz -C /data   # runs as root, keeps the files owned by UID 10001
-docker compose up -d
-docker compose logs -f                    # check that it signs in and polls
-rm bot-data.tgz                           # the archive contains tokens
+git clone https://github.com/yevhenii-rosliakov/bluetti-telegram-notifier.git
+cd bluetti-telegram-notifier
+mv ~/.env ~/bot-data.tgz .
+make restore                               # fill ./data from bot-data.tgz and start the bot
+make logs                                  # check that it signs in and polls
+rm bot-data.tgz                            # the archive contains tokens
 ```
 
-Stop the bot before copying so the database (and its `-wal` file) is consistent, and don't start
-the old copy again.
+`make backup` stops the bot while copying so the database (and its `-wal` file) is consistent.
+Don't start the old copy again.
 
-Starting fresh instead also works: keep only `.env` and run `docker compose run --rm bot login`
-again, because the `BLUETTI_REFRESH_TOKEN` in `.env` has most likely been rotated already. The
-outage history is lost and "power present since" restarts from the first poll.
+Starting fresh instead also works: keep only `.env` and run `make login` again, because the
+`BLUETTI_REFRESH_TOKEN` in `.env` has most likely been rotated already. The outage history is
+lost and "power present since" restarts from the first poll.
 
 With Helm: scale the Deployment to 0, copy the PVC contents to the new cluster's PVC (keeping UID
 10001 ownership), then scale back to 1.
