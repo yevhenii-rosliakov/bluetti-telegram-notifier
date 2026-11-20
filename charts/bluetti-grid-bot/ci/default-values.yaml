@@ -1,0 +1,4 @@
+config:
+  TELEGRAM_CHAT_IDS: "123456789"
+secrets:
+  TELEGRAM_BOT_TOKEN: "123456789:ci-placeholder"

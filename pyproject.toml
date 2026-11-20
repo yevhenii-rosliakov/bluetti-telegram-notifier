@@ -1,0 +1,93 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "bluetti-grid-bot"
+version = "0.1.0"
+description = "Telegram bot that reports grid power outages using a BLUETTI power station via the BLUETTI cloud"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.12"
+authors = [{ name = "Yevhenii Rosliakov" }]
+keywords = ["bluetti", "telegram", "power-outage", "home-automation"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Framework :: AsyncIO",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Home Automation",
+    "Typing :: Typed",
+]
+dependencies = [
+    # <3.14: aioresponses 0.7.9 (test mocks) does not support aiohttp 3.14 yet.
+    "aiohttp>=3.10,<3.14",
+    "aiogram>=3.15,<4",
+    "pydantic>=2.9,<3",
+    "pydantic-settings>=2.7,<3",
+    "prometheus-client>=0.21",
+    "tzdata>=2024.1",
+]
+
+[project.scripts]
+bluetti-grid-bot = "bluetti_grid_bot.__main__:main"
+
+[project.urls]
+Homepage = "https://github.com/yevhenii-rosliakov/bluetti-telegram-notifier"
+Issues = "https://github.com/yevhenii-rosliakov/bluetti-telegram-notifier/issues"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "pytest-cov>=6.0",
+    "aioresponses>=0.7.7",
+    "mypy>=1.13",
+    "ruff>=0.8",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/bluetti_grid_bot"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+addopts = "-ra"
+
+[tool.coverage.run]
+source = ["bluetti_grid_bot"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+exclude_also = ["if TYPE_CHECKING:", "raise NotImplementedError", "\\.\\.\\."]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+files = ["src", "tests"]
+plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = ["aioresponses.*"]
+ignore_missing_imports = true
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+extend-exclude = ["reference"]
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "B", "UP", "SIM", "RUF", "ASYNC", "S", "PT", "C4", "RET", "PL", "TRY"]
+ignore = [
+    "PLR0911", "PLR0912", "PLR0913", "PLR0915", "PLR2004",
+    "TRY003", "TRY300", "TRY400", "PLW2901", "PLR0917", "S105", "S106", "RUF001", "RUF003",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "PLC0415", "S108"]

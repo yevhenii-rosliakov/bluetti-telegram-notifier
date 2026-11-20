@@ -1,0 +1,16 @@
+{
+  "msgId": "anonymised",
+  "msgCode": 0,
+  "message": "OK",
+  "data": [
+    {
+      "sn": "PR200V2XXXXXXXXXXXXXX",
+      "model": "PR200V2-PR200V2",
+      "name": "PR200V2XXXXXXXXXXXXXX",
+      "online": "1",
+      "isBindByCurUser": "1",
+      "supportNetwork": "1",
+      "stateList": []
+    }
+  ]
+}

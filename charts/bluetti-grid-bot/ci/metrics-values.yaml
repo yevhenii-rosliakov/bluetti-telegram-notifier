@@ -1,0 +1,14 @@
+metrics:
+  enabled: true
+  serviceMonitor:
+    enabled: true
+    labels:
+      release: prometheus
+persistence:
+  existingClaim: bluetti-data
+config:
+  TELEGRAM_CHAT_IDS: "123456789"
+secrets:
+  TELEGRAM_BOT_TOKEN: "123456789:ci-placeholder"
+podAnnotations:
+  example.com/team: home

@@ -1,0 +1,132 @@
+# Default values for bluetti-grid-bot.
+
+image:
+  repository: ghcr.io/yevhenii-rosliakov/bluetti-grid-bot
+  # Defaults to .Chart.AppVersion.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# Non-secret configuration, rendered into a ConfigMap. Keys are the environment
+# variables documented in README / .env.example. Empty values are left out
+# (the application default applies).
+config:
+  TELEGRAM_CHAT_IDS: ""
+  TELEGRAM_ALLOWED_CHAT_IDS: ""
+  BLUETTI_GATEWAY: auto
+  BLUETTI_GATEWAY_PROBE_ORDER: ""
+  BLUETTI_DEVICE_SNS: ""
+  BLUETTI_DEVICE_NAMES: ""
+  BLUETTI_SSO_URL: ""
+  BLUETTI_CLIENT_ID: ""
+  BLUETTI_REDIRECT_URI: ""
+  POLL_INTERVAL_SECONDS: "60"
+  DETECTION_MODE: ats
+  LOAD_THRESHOLD_W: "5"
+  GRID_THRESHOLD_W: "5"
+  SOC_DROP_PCT: "2"
+  DEBOUNCE_POLLS: "2"
+  RESTORE_DEBOUNCE_POLLS: "2"
+  OFFLINE_GRACE_SECONDS: "600"
+  LOW_SOC_THRESHOLDS: "30,15"
+  ALERT_AC_OFF: "true"
+  NOTIFY_STARTUP: "true"
+  BOT_LANGUAGE: uk
+  TZ: UTC
+  LOG_LEVEL: INFO
+  LOG_FORMAT: json
+
+# Secret values. Ignored when existingSecret is set.
+secrets:
+  TELEGRAM_BOT_TOKEN: ""
+  BLUETTI_REFRESH_TOKEN: ""
+  BLUETTI_ACCESS_TOKEN: ""
+  BLUETTI_CLIENT_SECRET: ""
+
+# Name of an existing Secret (e.g. created by External Secrets Operator or Vault)
+# with the keys TELEGRAM_BOT_TOKEN and BLUETTI_REFRESH_TOKEN (optionally
+# BLUETTI_ACCESS_TOKEN, BLUETTI_CLIENT_SECRET, TELEGRAM_CHAT_IDS). All keys become env vars.
+existingSecret: ""
+
+# State (tokens, last state, outage history) lives in a SQLite file on this volume.
+# Without persistence the rotated refresh token is lost on every restart.
+persistence:
+  enabled: true
+  size: 100Mi
+  storageClass: ""
+  accessModes: [ReadWriteOnce]
+  existingClaim: ""
+  annotations: {}
+
+httpPort: 8080
+
+metrics:
+  enabled: false
+  serviceMonitor:
+    enabled: false
+    interval: 60s
+    scrapeTimeout: 10s
+    labels: {}
+
+service:
+  # Created automatically when metrics.serviceMonitor.enabled is true.
+  enabled: false
+  type: ClusterIP
+  port: 8080
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+  automountServiceAccountToken: false
+
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
+  fsGroupChangePolicy: OnRootMismatch
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  readOnlyRootFilesystem: true
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop: [ALL]
+
+resources:
+  requests:
+    cpu: 10m
+    memory: 64Mi
+  limits:
+    memory: 192Mi
+
+livenessProbe:
+  httpGet:
+    path: /healthz
+    port: http
+  initialDelaySeconds: 30
+  periodSeconds: 60
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /readyz
+    port: http
+  initialDelaySeconds: 15
+  periodSeconds: 30
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+extraEnv: []
+nodeSelector: {}
+tolerations: []
+affinity: {}

@@ -1,0 +1,339 @@
+"""Outage / alert state machine.
+
+Pure: ``evaluate(previous state, sample, config, now) -> (new state, events)``. No I/O,
+no clock, no logging, so every transition can be unit-tested.
+"""
+
+from __future__ import annotations
+
+import dataclasses
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
+from typing import Any
+
+from .events import (
+    AcOutputOff,
+    BotStartedOnBattery,
+    BotStartedOnGrid,
+    Event,
+    GridLost,
+    GridRestored,
+    LowBattery,
+    OutageEndedUnobserved,
+    StationOffline,
+    StationOnline,
+)
+from .models import DetectionMode, GridState, Reading, Sample
+
+
+@dataclass(frozen=True, slots=True)
+class DetectorConfig:
+    mode: DetectionMode = DetectionMode.ATS
+    load_threshold_w: float = 5.0
+    grid_threshold_w: float = 5.0
+    soc_drop_pct: float = 2.0
+    debounce_polls: int = 2
+    restore_debounce_polls: int = 2
+    offline_grace: timedelta = timedelta(seconds=600)
+    low_soc_thresholds: tuple[int, ...] = (30, 15)
+    alert_ac_off: bool = True
+
+
+@dataclass(slots=True)
+class DeviceState:
+    """Everything the detector remembers about one station. Persisted between restarts."""
+
+    sn: str
+    # Set on every process start; the next poll with data becomes the silent baseline.
+    baseline_pending: bool = True
+    # Last confirmed grid state (survives offline periods; UNKNOWN only before a baseline).
+    power: GridState = GridState.UNKNOWN
+    power_since: datetime | None = None
+    # When the start of the current state is only known to be within a window.
+    power_since_earliest: datetime | None = None
+    # Debounce of a pending transition.
+    candidate: GridState | None = None
+    candidate_count: int = 0
+    candidate_since: datetime | None = None
+    candidate_earliest: datetime | None = None
+    # Connectivity.
+    last_seen_at: datetime | None = None
+    unreachable_since: datetime | None = None
+    offline_notified: bool = False
+    # Last time seen before an offline period that was reported; a state change found
+    # right after it happened somewhere inside that gap.
+    gap_start: datetime | None = None
+    # Alerts.
+    low_soc_fired: tuple[int, ...] = ()
+    ac_off_count: int = 0
+    ac_off_alerted: bool = False
+    # passthrough mode: SOC at the last poll that showed grid input.
+    soc_at_grid: float | None = None
+
+    @property
+    def effective(self) -> GridState:
+        """What the bot can honestly claim right now."""
+        if self.baseline_pending or self.offline_notified:
+            return GridState.UNKNOWN
+        return self.power
+
+    def to_dict(self) -> dict[str, Any]:
+        out: dict[str, Any] = {}
+        for f in dataclasses.fields(self):
+            value = getattr(self, f.name)
+            if isinstance(value, datetime):
+                value = value.isoformat()
+            elif isinstance(value, GridState):
+                value = value.value
+            elif isinstance(value, tuple):
+                value = list(value)
+            out[f.name] = value
+        return out
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> DeviceState:
+        known = {f.name: f for f in dataclasses.fields(cls)}
+        kwargs: dict[str, Any] = {}
+        for name, value in data.items():
+            if name not in known or value is None:
+                continue
+            if name in ("power", "candidate"):
+                value = GridState(value)
+            elif name in (
+                "power_since",
+                "power_since_earliest",
+                "candidate_since",
+                "candidate_earliest",
+                "last_seen_at",
+                "unreachable_since",
+                "gap_start",
+            ):
+                value = datetime.fromisoformat(value)
+            elif name == "low_soc_fired":
+                value = tuple(int(v) for v in value)
+            kwargs[name] = value
+        return cls(**kwargs)
+
+
+@dataclass(frozen=True, slots=True)
+class Classification:
+    state: GridState | None  # None = this sample says nothing either way
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class Result:
+    state: DeviceState
+    events: list[Event] = field(default_factory=list)
+    observed: Classification | None = None
+
+
+def _fmt(value: float) -> str:
+    return f"{value:g}"
+
+
+def classify(reading: Reading, cfg: DetectorConfig, soc_at_grid: float | None) -> Classification:
+    """Decide from one reading whether the station is on grid or on battery."""
+    grid_thr, load_thr = cfg.grid_threshold_w, cfg.load_threshold_w
+    grid = reading.grid_w
+
+    if cfg.mode is DetectionMode.GRID_INPUT:
+        if grid is None:
+            return Classification(None, "GridAllTotalPower unknown")
+        if grid >= grid_thr:
+            return Classification(GridState.GRID, f"grid input {_fmt(grid)} W >= {_fmt(grid_thr)}")
+        return Classification(GridState.BATTERY, f"grid input {_fmt(grid)} W < {_fmt(grid_thr)}")
+
+    if grid is not None and grid >= grid_thr:
+        return Classification(GridState.GRID, f"grid input {_fmt(grid)} W >= {_fmt(grid_thr)}")
+
+    if cfg.mode is DetectionMode.ATS:
+        load = reading.ac_load_w
+        if load is None:
+            return Classification(None, "ACLoadAllTotalPower unknown")
+        if load < load_thr:
+            return Classification(
+                GridState.GRID, f"AC load {_fmt(load)} W < {_fmt(load_thr)}: house runs from grid"
+            )
+        if grid is None:
+            return Classification(None, "GridAllTotalPower unknown")
+        return Classification(
+            GridState.BATTERY,
+            f"AC load {_fmt(load)} W >= {_fmt(load_thr)} and grid input {_fmt(grid)} W "
+            f"< {_fmt(grid_thr)}",
+        )
+
+    # passthrough
+    if grid is None:
+        return Classification(None, "GridAllTotalPower unknown")
+    if reading.ac_load_w is not None or reading.dc_load_w is not None:
+        load = (reading.ac_load_w or 0.0) + (reading.dc_load_w or 0.0)
+        if load >= load_thr:
+            return Classification(
+                GridState.BATTERY,
+                f"grid input {_fmt(grid)} W < {_fmt(grid_thr)} and load {_fmt(load)} W "
+                f">= {_fmt(load_thr)}",
+            )
+    if soc_at_grid is not None and reading.soc is not None:
+        drop = soc_at_grid - reading.soc
+        if drop >= cfg.soc_drop_pct:
+            return Classification(
+                GridState.BATTERY,
+                f"SOC dropped {_fmt(drop)} % since grid was last seen "
+                f"(>= {_fmt(cfg.soc_drop_pct)})",
+            )
+    return Classification(None, "no grid input and no load: cannot tell")
+
+
+def _reset_candidate(s: DeviceState) -> None:
+    s.candidate = None
+    s.candidate_count = 0
+    s.candidate_since = None
+    s.candidate_earliest = None
+
+
+def _load(reading: Reading) -> float | None:
+    if reading.ac_load_w is None and reading.dc_load_w is None:
+        return None
+    return (reading.ac_load_w or 0.0) + (reading.dc_load_w or 0.0)
+
+
+def _baseline(
+    s: DeviceState, observed: GridState, reading: Reading, now: datetime, prev_seen: datetime | None
+) -> list[Event]:
+    events: list[Event] = []
+    persisted = s.power
+    if observed is GridState.BATTERY:
+        if persisted is GridState.BATTERY and s.power_since is not None:
+            # Same outage as before the restart: keep its start and alerts already sent.
+            events.append(
+                BotStartedOnBattery(s.sn, s.power_since, True, reading.soc, _load(reading))
+            )
+        else:
+            s.power_since = now
+            s.power_since_earliest = prev_seen if persisted is GridState.GRID else None
+            s.low_soc_fired = ()
+            events.append(BotStartedOnBattery(s.sn, now, False, reading.soc, _load(reading)))
+    else:
+        if persisted is GridState.BATTERY:
+            events.append(OutageEndedUnobserved(s.sn, now))
+        if persisted is not GridState.GRID or s.power_since is None:
+            s.power_since = now
+            s.power_since_earliest = None
+        s.low_soc_fired = ()
+        events.append(BotStartedOnGrid(s.sn, reading.soc))
+    s.power = observed
+    s.baseline_pending = False
+    s.gap_start = None
+    _reset_candidate(s)
+    return events
+
+
+def _debounce(
+    s: DeviceState, observed: GridState, reading: Reading, cfg: DetectorConfig, now: datetime
+) -> list[Event]:
+    if observed is s.power:
+        _reset_candidate(s)
+        s.gap_start = None
+        return []
+    if s.candidate is observed:
+        s.candidate_count += 1
+    else:
+        s.candidate = observed
+        s.candidate_count = 1
+        s.candidate_since = now
+        s.candidate_earliest = s.gap_start
+    s.gap_start = None
+
+    needed = cfg.debounce_polls if observed is GridState.BATTERY else cfg.restore_debounce_polls
+    if s.candidate_count < needed:
+        return []
+
+    at = s.candidate_since or now
+    earliest = s.candidate_earliest
+    events: list[Event] = []
+    if observed is GridState.BATTERY:
+        events.append(GridLost(s.sn, at, earliest, reading.soc, _load(reading)))
+    elif s.power is GridState.BATTERY:
+        events.append(
+            GridRestored(s.sn, at, earliest, s.power_since, s.power_since_earliest, reading.soc)
+        )
+    s.power = observed
+    s.power_since = at
+    s.power_since_earliest = earliest
+    s.low_soc_fired = ()
+    _reset_candidate(s)
+    return events
+
+
+def _low_soc(s: DeviceState, reading: Reading, cfg: DetectorConfig) -> list[Event]:
+    if s.power is not GridState.BATTERY or reading.soc is None:
+        return []
+    soc = reading.soc
+    crossed = [t for t in cfg.low_soc_thresholds if soc <= t and t not in s.low_soc_fired]
+    if not crossed:
+        return []
+    s.low_soc_fired = tuple(sorted({*s.low_soc_fired, *crossed}, reverse=True))
+    # Several thresholds crossed at once (e.g. bot started at 12 %): one message, the lowest.
+    return [LowBattery(s.sn, min(crossed), soc, reading.dsg_minutes)]
+
+
+def _ac_off(s: DeviceState, reading: Reading, cfg: DetectorConfig, now: datetime) -> list[Event]:
+    if reading.ac_on is None:
+        return []
+    if reading.ac_on:
+        s.ac_off_count = 0
+        s.ac_off_alerted = False
+        return []
+    s.ac_off_count += 1
+    if cfg.alert_ac_off and not s.ac_off_alerted and s.ac_off_count >= cfg.debounce_polls:
+        s.ac_off_alerted = True
+        return [AcOutputOff(s.sn, now)]
+    return []
+
+
+def evaluate(
+    prev: DeviceState, sample: Sample | None, cfg: DetectorConfig, now: datetime
+) -> Result:
+    """Advance the state machine by one poll.
+
+    ``sample`` is ``None`` when the poll failed. A sample with ``online == False`` or an
+    empty ``stateList`` counts as "no data" too: the state becomes UNKNOWN, never
+    "grid lost" or "grid restored".
+    """
+    s = dataclasses.replace(prev)
+    events: list[Event] = []
+
+    if sample is None or not sample.has_data:
+        _reset_candidate(s)
+        if s.unreachable_since is None:
+            s.unreachable_since = now
+        if not s.offline_notified and now - s.unreachable_since >= cfg.offline_grace:
+            s.offline_notified = True
+            events.append(StationOffline(s.sn, s.unreachable_since, s.last_seen_at))
+        return Result(s, events)
+
+    prev_seen = s.last_seen_at
+    if s.unreachable_since is not None:
+        if s.offline_notified:
+            events.append(StationOnline(s.sn, now, s.unreachable_since))
+            s.gap_start = prev_seen
+        s.unreachable_since = None
+        s.offline_notified = False
+    s.last_seen_at = now
+
+    reading = sample.reading
+    observed = classify(reading, cfg, s.soc_at_grid)
+    if observed.state is GridState.GRID and reading.soc is not None:
+        s.soc_at_grid = reading.soc
+
+    if observed.state is not None:
+        if s.baseline_pending:
+            events += _baseline(s, observed.state, reading, now, prev_seen)
+        else:
+            events += _debounce(s, observed.state, reading, cfg, now)
+
+    if not s.baseline_pending:
+        events += _low_soc(s, reading, cfg)
+    events += _ac_off(s, reading, cfg, now)
+    return Result(s, events, observed)

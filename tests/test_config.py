@@ -1,0 +1,125 @@
+from __future__ import annotations
+
+from datetime import timedelta
+from pathlib import Path
+
+import pytest
+
+from bluetti_grid_bot.config import GATEWAYS, ConfigError, Settings, load_settings
+from bluetti_grid_bot.models import DetectionMode
+
+from .conftest import make_settings
+
+
+def test_defaults(tmp_path: Path) -> None:
+    s = Settings(_env_file=None)
+    assert s.bluetti_gateway == "auto"
+    assert s.bluetti_gateway_probe_order == [GATEWAYS["eu"], GATEWAYS["global"], GATEWAYS["us"]]
+    assert s.bluetti_client_id == "HomeAssistant"
+    assert s.bluetti_client_secret.get_secret_value() == "SG9tZUFzc2lzdGFudA=="
+    assert s.bluetti_redirect_uri == "https://my.home-assistant.io/redirect/oauth"
+    assert s.poll_interval_seconds == 60
+    assert s.detection_mode is DetectionMode.ATS
+    assert s.low_soc_thresholds == [30, 15]
+    assert s.bot_language == "uk"
+    assert s.state_dir == Path("/data")
+    assert s.tz == "UTC"
+    cfg = s.detector_config()
+    assert cfg.offline_grace == timedelta(minutes=10)
+    assert cfg.debounce_polls == 2
+
+
+def test_from_environment(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    env = {
+        "TELEGRAM_BOT_TOKEN": "123:abc",
+        "TELEGRAM_CHAT_IDS": "111, -1002223334445",
+        "BLUETTI_DEVICE_SNS": "SN1,SN2",
+        "BLUETTI_DEVICE_NAMES": "SN1=Mom's flat, SN2=Garage",
+        "BLUETTI_GATEWAY": "EU",
+        "LOW_SOC_THRESHOLDS": "15,30,30",
+        "DETECTION_MODE": "passthrough",
+        "TZ": "Europe/Kyiv",
+        "STATE_DIR": str(tmp_path),
+        "ALERT_AC_OFF": "false",
+    }
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+    s = load_settings(_env_file=None)
+    assert s.telegram_chat_ids == [111, -1002223334445]
+    assert s.allowed_chat_ids == frozenset({111, -1002223334445})
+    assert s.bluetti_device_sns == ["SN1", "SN2"]
+    assert s.bluetti_device_names == {"SN1": "Mom's flat", "SN2": "Garage"}
+    assert s.bluetti_gateway == GATEWAYS["eu"]
+    assert s.low_soc_thresholds == [30, 15]
+    assert s.detection_mode is DetectionMode.PASSTHROUGH
+    assert s.zone.key == "Europe/Kyiv"
+    assert s.db_path.parent == tmp_path
+    assert s.alert_ac_off is False
+    s.require_telegram()
+
+
+def test_allowed_chat_ids_override(tmp_path: Path) -> None:
+    s = make_settings(tmp_path, telegram_allowed_chat_ids="111,333")
+    assert s.allowed_chat_ids == frozenset({111, 333})
+
+
+def test_empty_lists(tmp_path: Path) -> None:
+    s = make_settings(tmp_path, low_soc_thresholds="", bluetti_device_sns="")
+    assert s.low_soc_thresholds == []
+    assert s.bluetti_device_sns == []
+
+
+def test_gateway_url_and_custom_probe_order(tmp_path: Path) -> None:
+    s = make_settings(
+        tmp_path, bluetti_gateway="https://gw.example.test/", bluetti_gateway_probe_order="us,eu"
+    )
+    assert s.bluetti_gateway == "https://gw.example.test"
+    assert s.bluetti_gateway_probe_order == [GATEWAYS["us"], GATEWAYS["eu"]]
+
+
+def test_tz_leading_colon(tmp_path: Path) -> None:
+    assert make_settings(tmp_path, tz=":UTC").tz == "UTC"
+
+
+def test_blank_secret_is_none(tmp_path: Path) -> None:
+    assert make_settings(tmp_path, bluetti_refresh_token="  ").bluetti_refresh_token is None
+
+
+@pytest.mark.parametrize(
+    ("env", "message"),
+    [
+        ({"POLL_INTERVAL_SECONDS": "5"}, "POLL_INTERVAL_SECONDS"),
+        ({"DETECTION_MODE": "magic"}, "DETECTION_MODE"),
+        ({"BLUETTI_GATEWAY": "mars"}, "BLUETTI_GATEWAY"),
+        ({"BLUETTI_GATEWAY_PROBE_ORDER": ","}, "BLUETTI_GATEWAY_PROBE_ORDER"),
+        ({"TELEGRAM_CHAT_IDS": "abc"}, "TELEGRAM_CHAT_IDS"),
+        ({"LOW_SOC_THRESHOLDS": "30,150"}, "LOW_SOC_THRESHOLDS"),
+        ({"TZ": "Mars/Olympus"}, "unknown time zone"),
+        ({"BOT_LANGUAGE": "de"}, "BOT_LANGUAGE"),
+        ({"BLUETTI_DEVICE_NAMES": "SN1"}, "SN=Name"),
+        ({"DEBOUNCE_POLLS": "0"}, "DEBOUNCE_POLLS"),
+        ({"BLUETTI_SSO_URL": "sso.bluettipower.com"}, "BLUETTI_SSO_URL"),
+    ],
+)
+def test_validation_errors_name_the_variable(
+    monkeypatch: pytest.MonkeyPatch, env: dict[str, str], message: str
+) -> None:
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+    with pytest.raises(ConfigError, match=message):
+        load_settings(_env_file=None)
+
+
+def test_require_telegram(tmp_path: Path) -> None:
+    s = Settings(_env_file=None, state_dir=tmp_path)
+    with pytest.raises(ConfigError, match="TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_IDS"):
+        s.require_telegram()
+
+
+def test_masked_hides_secrets(tmp_path: Path) -> None:
+    s = make_settings(tmp_path, bluetti_refresh_token="REALREFRESHTOKEN")
+    dumped = repr(s.masked())
+    assert "REALREFRESHTOKEN" not in dumped
+    assert "TEST-TOKEN" not in dumped
+    assert "SG9tZUFzc2lzdGFudA" not in dumped
+    assert "REALREFRESHTOKEN" not in repr(s)
