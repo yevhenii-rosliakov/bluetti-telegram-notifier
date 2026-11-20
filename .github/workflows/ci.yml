@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ matrix.python }}
+          enable-cache: true
+      - run: uv sync --frozen
+      - name: Lint
+        run: |
+          uv run ruff check .
+          uv run ruff format --check .
+      - name: Type check
+        run: uv run mypy
+      - name: Tests
+        run: uv run pytest --cov --cov-report=term
+      - name: Coverage >= 85 % on detector, auth, cloud
+        run: >
+          uv run coverage report --fail-under=85
+          --include='*/bluetti_grid_bot/detector.py,*/bluetti_grid_bot/auth.py,*/bluetti_grid_bot/cloud.py'
+
+  helm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - name: Lint and render
+        run: |
+          helm lint charts/bluetti-grid-bot --strict
+          for f in charts/bluetti-grid-bot/ci/*.yaml; do
+            echo "::group::$f"
+            helm lint charts/bluetti-grid-bot --strict -f "$f"
+            helm template ci charts/bluetti-grid-bot -f "$f" > /dev/null
+            echo "::endgroup::"
+          done
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build (no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: bluetti-grid-bot:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Smoke test (read-only root FS)
+        run: docker run --rm --read-only bluetti-grid-bot:ci --version

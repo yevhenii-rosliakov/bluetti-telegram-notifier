@@ -1,0 +1,9 @@
+persistence:
+  enabled: false
+config:
+  TELEGRAM_CHAT_IDS: "123456789"
+  BOT_LANGUAGE: en
+secrets:
+  TELEGRAM_BOT_TOKEN: "123456789:ci-placeholder"
+nodeSelector:
+  kubernetes.io/arch: arm64

@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "bgb.fullname" . }}
+  labels:
+    {{- include "bgb.labels" . | nindent 4 }}
+data:
+  {{- range $key, $value := .Values.config }}
+  {{- if ne (toString $value) "" }}
+  {{ $key }}: {{ $value | toString | quote }}
+  {{- end }}
+  {{- end }}
+  STATE_DIR: /data
+  HTTP_PORT: {{ .Values.httpPort | toString | quote }}
+  METRICS_ENABLED: {{ .Values.metrics.enabled | toString | quote }}

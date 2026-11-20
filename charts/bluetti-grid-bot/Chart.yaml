@@ -1,0 +1,13 @@
+apiVersion: v2
+name: bluetti-grid-bot
+description: Telegram bot that reports grid power outages using a BLUETTI power station
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+home: https://github.com/yevhenii-rosliakov/bluetti-telegram-notifier
+sources:
+  - https://github.com/yevhenii-rosliakov/bluetti-telegram-notifier
+keywords: [bluetti, telegram, power-outage, home-automation]
+maintainers:
+  - name: Yevhenii Rosliakov
+    url: https://github.com/yevhenii-rosliakov

@@ -1,0 +1,20 @@
+# 1. cp .env.example .env   and fill in TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_IDS
+# 2. docker compose run --rm bot login     (sign in to BLUETTI, tokens go to the volume)
+# 3. docker compose up -d
+services:
+  bot:
+    image: ghcr.io/yevhenii-rosliakov/bluetti-grid-bot:latest
+    build: .
+    env_file: .env
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    volumes:
+      - bot-data:/data
+    # Uncomment to reach /healthz, /readyz and /metrics from the host.
+    # ports:
+    #   - "8080:8080"
+
+volumes:
+  bot-data:

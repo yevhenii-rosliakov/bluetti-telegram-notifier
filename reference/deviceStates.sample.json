@@ -1,0 +1,27 @@
+{
+  "msgId": "anonymised",
+  "msgCode": 0,
+  "message": "OK",
+  "data": [
+    {
+      "sn": "PR200V2XXXXXXXXXXXXXX",
+      "online": "1",
+      "_note": "Real PR200V2 answer, grid present, battery full, ATS topology (no load on station).",
+      "stateList": [
+        {"fnCode": "SetCtrlWorkMode", "fnValue": "workmode_1"},
+        {"fnCode": "DsgFullTime", "fnValue": "5994"},
+        {"fnCode": "SOC", "fnValue": "100"},
+        {"fnCode": "SetCtrlAc", "fnValue": "1"},
+        {"fnCode": "PVAllTotalPower", "fnValue": "0"},
+        {"fnCode": "GridAllTotalPower", "fnValue": "0"},
+        {"fnCode": "SetCtrlDc", "fnValue": "0"},
+        {"fnCode": "SetACECO", "fnValue": "0"},
+        {"fnCode": "SetDCECO", "fnValue": "0"},
+        {"fnCode": "ChgFullTime", "fnValue": "0"},
+        {"fnCode": "DCLoadAllTotalPower", "fnValue": "0"},
+        {"fnCode": "ACLoadAllTotalPower", "fnValue": "0"},
+        {"fnCode": "SetSleepMode", "fnValue": "0"}
+      ]
+    }
+  ]
+}

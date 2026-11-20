@@ -1,0 +1,17 @@
+{{- if include "bgb.serviceEnabled" . }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "bgb.fullname" . }}
+  labels:
+    {{- include "bgb.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.service.type }}
+  ports:
+    - name: http
+      port: {{ .Values.service.port }}
+      targetPort: http
+      protocol: TCP
+  selector:
+    {{- include "bgb.selectorLabels" . | nindent 4 }}
+{{- end }}
