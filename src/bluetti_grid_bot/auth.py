@@ -4,6 +4,9 @@ Token precedence: the token stored in ``STATE_DIR`` (it rotates on refresh, so i
 newest) wins over ``BLUETTI_REFRESH_TOKEN``. The env token is only a seed; it is adopted
 again only when its value changes (e.g. the user ran ``login`` elsewhere and pasted the
 new token into ``.env``).
+
+With ``BLUETTI_STATIONS`` every station (site) has its own login: its tokens are stored
+under its id and seeded from ``BLUETTI_<ID>_REFRESH_TOKEN``.
 """
 
 from __future__ import annotations
@@ -21,7 +24,7 @@ from typing import Any
 import aiohttp
 
 from .logs import register_secret
-from .storage import Storage, TokenSet
+from .storage import Storage, TokenSet, scoped
 
 log = logging.getLogger(__name__)
 
@@ -117,6 +120,7 @@ class TokenManager:
         *,
         seed_refresh_token: str | None = None,
         seed_access_token: str | None = None,
+        site: str = "",
         clock: Callable[[], float] = time.time,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         retries: int = 3,
@@ -126,6 +130,8 @@ class TokenManager:
         self._storage = storage
         self._seed_refresh = seed_refresh_token
         self._seed_access = seed_access_token
+        self._site = site
+        self._seed_key = scoped(_SEED_KEY, site)
         self._clock = clock
         self._sleep = sleep
         self._retries = retries
@@ -137,26 +143,36 @@ class TokenManager:
     def current(self) -> TokenSet | None:
         """Tokens to use now, applying the seed rules. Re-read every time so that a
         ``login`` run from another process is picked up without a restart."""
-        stored = self._storage.get_tokens()
+        stored = self._storage.get_tokens(self._site)
         if self._seed_refresh:
             seed_sha = _sha(self._seed_refresh)
-            if self._storage.get(_SEED_KEY) != seed_sha:
+            if self._storage.get(self._seed_key) != seed_sha:
                 if stored is None or stored.refresh_token != self._seed_refresh:
-                    log.info("Using BLUETTI_REFRESH_TOKEN from the environment (new value)")
+                    log.info("Using %s from the environment (new value)", self._var)
                     stored = TokenSet(
                         access_token=self._seed_access,
                         refresh_token=self._seed_refresh,
                         expires_at=None if self._seed_access else 0.0,
                         obtained_at=self._clock(),
                     )
-                    self._storage.save_tokens(stored)
-                self._storage.set(_SEED_KEY, seed_sha)
+                    self._storage.save_tokens(stored, self._site)
+                self._storage.set(self._seed_key, seed_sha)
         if stored is None and self._seed_access:
             stored = TokenSet(self._seed_access, None, None, self._clock())
         if stored is not None:
             register_secret(stored.access_token)
             register_secret(stored.refresh_token)
         return stored
+
+    @property
+    def _var(self) -> str:
+        return (
+            f"BLUETTI_{self._site.upper()}_REFRESH_TOKEN" if self._site else "BLUETTI_REFRESH_TOKEN"
+        )
+
+    @property
+    def _login_cmd(self) -> str:
+        return "bluetti-grid-bot login" + (f" --station {self._site}" if self._site else "")
 
     def _valid(self, tokens: TokenSet) -> bool:
         if not tokens.access_token:
@@ -166,7 +182,7 @@ class TokenManager:
     async def access_token(self) -> str:
         tokens = self.current()
         if tokens is None:
-            raise AuthExpiredError("No BLUETTI token: run `bluetti-grid-bot login` first")
+            raise AuthExpiredError(f"No BLUETTI token: run `{self._login_cmd}` first")
         if self._valid(tokens):
             assert tokens.access_token is not None  # noqa: S101 - narrowed by _valid
             return tokens.access_token
@@ -178,7 +194,7 @@ class TokenManager:
         async with self._lock:
             tokens = self.current()
             if tokens is None or not tokens.refresh_token:
-                raise AuthExpiredError("No BLUETTI refresh token: run `bluetti-grid-bot login`")
+                raise AuthExpiredError(f"No BLUETTI refresh token: run `{self._login_cmd}`")
             if tokens.access_token and tokens.access_token != stale and self._valid(tokens):
                 return tokens.access_token
             log.info("Refreshing BLUETTI access token")
@@ -192,7 +208,7 @@ class TokenManager:
                 permanent_error=AuthExpiredError,
             )
             new = _tokens_from_response(data, self._clock(), tokens.refresh_token)
-            self._storage.save_tokens(new)
+            self._storage.save_tokens(new, self._site)
             if new.refresh_token != tokens.refresh_token:
                 log.info("BLUETTI refresh token rotated; stored the new one")
             assert new.access_token is not None  # noqa: S101 - always set from the answer
@@ -210,10 +226,10 @@ class TokenManager:
             permanent_error=AuthError,
         )
         tokens = _tokens_from_response(data, self._clock(), None)
-        self._storage.save_tokens(tokens)
+        self._storage.save_tokens(tokens, self._site)
         if self._seed_refresh:
             # The env seed is older than this login; don't let it override the new token.
-            self._storage.set(_SEED_KEY, _sha(self._seed_refresh))
+            self._storage.set(self._seed_key, _sha(self._seed_refresh))
         return tokens
 
     async def _token_request(

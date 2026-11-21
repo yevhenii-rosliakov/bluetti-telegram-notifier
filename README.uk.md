@@ -125,6 +125,101 @@ SQLite у теці `./data` (змонтована як `/data`) або в Postgr
   запустіть `login`» і пробуватиме кожні 5 хвилин. Новий `login` з тим самим `STATE_DIR`
   підхоплюється без перезапуску.
 
+## Кілька станцій у різних місцях
+
+Бот може стежити за кількома станціями одночасно, наприклад, удома й на дачі. Кожна станція
+має короткий **id** (латинські літери й цифри, наприклад, `home`, `cottage`), власну **назву**
+для повідомлень і власний вхід у BLUETTI: refresh-токен, gateway і серійні номери. Про
+відключення бот пише окремо для кожної станції, а `/status`, `/stats` і тижневий підсумок
+показують усі станції.
+
+> Обидві станції в **одному** акаунті BLUETTI? Тоді цей розділ не потрібен: один `login`
+> покаже обидві станції. Вкажіть обидва серійні номери в `BLUETTI_DEVICE_SNS`, а назви — в
+> `BLUETTI_DEVICE_NAMES=SN1=Дім,SN2=Дача`. Налаштування нижче потрібне, коли станції належать
+> різним акаунтам BLUETTI або коли ви хочете окремий вхід для кожної станції.
+
+### 1. Перелічіть станції
+
+У `.env` перелічіть id у `BLUETTI_STATIONS`. Якщо `BLUETTI_STATIONS` задано, змінні для однієї
+станції `BLUETTI_REFRESH_TOKEN` і `BLUETTI_DEVICE_SNS` треба **прибрати**, бо в кожної станції
+вони свої:
+
+```dotenv
+BLUETTI_STATIONS=home,cottage
+```
+
+### 2. Увійдіть окремо для кожної станції
+
+Запустіть `login --station <id>` для кожної станції й увійдіть в **акаунт BLUETTI, якому
+належить саме ця станція**:
+
+| Де | Команда |
+|---|---|
+| Docker (make) | `make login STATION=home`, потім `make login STATION=cottage` |
+| Docker Compose | `docker compose run --rm bot login --station home` |
+| Python | `bluetti-grid-bot login --station home` |
+| Kubernetes | `kubectl exec -it deploy/<release> -- bluetti-grid-bot login --station home` |
+
+Кожен запуск проходить так само, як [вхід для однієї станції](#як-отримати-токен-bluetti):
+відкрийте посилання, увійдіть, скопіюйте адресу сторінки «My Home Assistant» і вставте її.
+Далі:
+
+- **Для кожної станції відкривайте приватне вікно (інкогніто)** або вийдіть із
+  `sso.bluettipower.com` між запусками. Інакше браузер залишиться в першому акаунті, і другий
+  `login` отримає токен не того акаунта.
+- `login --station <id>` показує станції **цього акаунта** і друкує рядки цієї станції, вже з
+  її id у назвах змінних:
+  ```
+  BLUETTI_HOME_NAME=Home
+  BLUETTI_HOME_REFRESH_TOKEN=…
+  BLUETTI_HOME_GATEWAY=eu
+  BLUETTI_HOME_DEVICE_SNS=PR200V2XXXXXXXXXXXXXX
+  ```
+  Скопіюйте їх у `.env`. У `BLUETTI_HOME_NAME` напишіть назву, яку хочете бачити в
+  повідомленнях. Якщо id ще немає в `BLUETTI_STATIONS`, `login` надрукує і новий рядок
+  `BLUETTI_STATIONS`.
+- Токени зберігаються в стані окремо для кожної станції, тож два входи не перезаписують один
+  одного.
+
+### 3. Що вийде в `.env`
+
+```dotenv
+BLUETTI_STATIONS=home,cottage
+
+BLUETTI_HOME_NAME=Дім
+BLUETTI_HOME_REFRESH_TOKEN=eyJ…
+BLUETTI_HOME_GATEWAY=eu
+BLUETTI_HOME_DEVICE_SNS=PR200V2XXXXXXXXXXXXXX
+
+BLUETTI_COTTAGE_NAME=Дача
+BLUETTI_COTTAGE_REFRESH_TOKEN=eyJ…
+BLUETTI_COTTAGE_GATEWAY=eu
+BLUETTI_COTTAGE_DEVICE_SNS=AC180XXXXXXXXXXXXXXX
+```
+
+Потім `make check` (або `bluetti-grid-bot check`) покаже всі станції, а `make up` запустить бот.
+
+| Змінна | Типово | Примітки |
+|---|---|---|
+| `BLUETTI_<ID>_NAME` | назва в застосунку BLUETTI | показується в повідомленнях; якщо серійних номерів кілька, стає `Назва …1234` (`BLUETTI_DEVICE_NAMES` має пріоритет) |
+| `BLUETTI_<ID>_REFRESH_TOKEN` | — | з `login --station <id>`; заповнює стан так само, як `BLUETTI_REFRESH_TOKEN` |
+| `BLUETTI_<ID>_GATEWAY` | `BLUETTI_GATEWAY` | `auto` / `eu` / `global` / `us` / URL |
+| `BLUETTI_<ID>_DEVICE_SNS` | усі станції акаунта | серійні номери через кому |
+| `BLUETTI_<ID>_ACCESS_TOKEN` | — | лише для налагодження |
+
+Примітки:
+- Якщо вхід однієї станції перестав діяти, бот назве її в повідомленні («Вхід у BLUETTI для
+  «Дача» більше не дійсний … `login --station cottage`») і далі стежитиме за іншими. Виправте
+  це командою `login --station cottage`.
+- Якщо акаунт або gateway однієї станції недоступний, а інший працює, «немає зв'язку» через
+  `OFFLINE_GRACE_SECONDS` буде лише для цієї станції.
+- `BLUETTI_GATEWAY_PROBE_ORDER`, налаштування визначення, графік і Telegram спільні для всіх
+  станцій.
+- **Перехід з однієї станції на кілька:** наявний вхід збережено без id, і він не
+  використовується. Додайте `BLUETTI_STATIONS`, приберіть `BLUETTI_REFRESH_TOKEN` /
+  `BLUETTI_DEVICE_SNS` і запустіть `login --station <id>` для кожної станції, зокрема й для
+  тієї, що вже була. Історія відключень зберігається, бо вона прив'язана до серійного номера.
+
 ## Як вибрати `DETECTION_MODE`
 
 **Самого `GridAllTotalPower` недостатньо.** Коли батарея повна і від станції нічого не
@@ -220,6 +315,7 @@ docker compose run --rm bot check
 | `BLUETTI_GATEWAY_PROBE_ORDER` | `eu,global,us` | порядок пошуку для `auto` |
 | `BLUETTI_DEVICE_SNS` | порожньо = всі | серійні номери через кому |
 | `BLUETTI_DEVICE_NAMES` | — | `SN1=Мамина квартира,SN2=Гараж`; показуються, коли станцій кілька |
+| `BLUETTI_STATIONS` | — | кілька станцій із власними входами: `home,cottage`; далі `BLUETTI_<ID>_NAME`, `_REFRESH_TOKEN`, `_GATEWAY`, `_DEVICE_SNS` для кожної, див. [Кілька станцій](#кілька-станцій-у-різних-місцях) |
 | `BLUETTI_SSO_URL` | `https://sso.bluettipower.com` | |
 | `BLUETTI_CLIENT_ID` | `HomeAssistant` | публічний клієнт інтеграції HA |
 | `BLUETTI_CLIENT_SECRET` | `SG9tZUFzc2lzdGFudA==` | надсилається як є |
@@ -292,6 +388,9 @@ kubectl -n bluetti exec -it deploy/bluetti-grid-bot -- bluetti-grid-bot login
 - `config.*` — усі несекретні змінні (ConfigMap); `secrets.*` створює Secret, або вкажіть
   `existingSecret` — власний Secret із ключами `TELEGRAM_BOT_TOKEN` і `BLUETTI_REFRESH_TOKEN`
   (усі його ключі стають змінними середовища).
+- Кілька станцій: опишіть їх у мапі `stations` (`name`, `gateway`, `deviceSns`, `refreshToken`
+  для кожного id станції); чарт сам створить змінні `BLUETTI_<ID>_*`. Див.
+  [README чарту](charts/bluetti-grid-bot/README.md#several-stations).
 - UID 10001, файлова система лише для читання, усі capabilities скинуті, проби на `/healthz` і
   `/readyz`. `metrics.enabled` + `metrics.serviceMonitor.enabled` додають Service і `ServiceMonitor`.
 - Под буде NotReady до першого успішного опитування (наприклад, до `login`); `kubectl exec` при
@@ -351,7 +450,9 @@ rm bot-data.tgz                            # в архіві є токени
 | `online=0`, порожній `stateList` | Станцію треба **прив'язати** до API-клієнта (`bindDevices`). Бот робить це під час запуску і повторно (не частіше ніж раз на 5 хв), коли станція не віддає даних. Якщо не допомагає — станція справді офлайн: перевірте Wi-Fi (2,4 ГГц) у застосунку BLUETTI. |
 | `No BLUETTI gateway accepted the token` | Токен недійсний або акаунт у дата-центрі, якого немає в `BLUETTI_GATEWAY_PROBE_ORDER`. Запустіть `login` ще раз; спробуйте `BLUETTI_GATEWAY=eu`/`global`/`us`. |
 | Неправильний gateway | Для `auto` gateway кешується в `STATE_DIR`; якщо він відхиляє запити, бот забуває його і шукає знову. |
-| «Вхід у BLUETTI більше не дійсний» | Refresh-токен відкликано (зміна пароля, довго офлайн). Запустіть `login` ще раз. |
+| «Вхід у BLUETTI більше не дійсний» | Refresh-токен відкликано (зміна пароля, довго офлайн). Запустіть `login` ще раз (`login --station <id>` для станції з повідомлення). |
+| `BLUETTI_<ID>_* is set but '<id>' is not listed in BLUETTI_STATIONS` | Додайте id у `BLUETTI_STATIONS` або приберіть ці змінні. |
+| `login` для кількох станцій отримує не той акаунт | Браузер залишився в іншому акаунті. Відкривайте приватне вікно для кожного `login --station`. |
 | `login` не показує станцій | Увійдіть в акаунт, якому **належить** станція, а не той, з яким нею поділилися. Опитуються лише станції з `cloud=1` (Wi-Fi). |
 | Відключення не визначається | Запустіть `check` під час відключення; налаштуйте `DETECTION_MODE` / `LOAD_THRESHOLD_W`. Перевірте, що AC ECO вимкнено, а AC-вихід увімкнено. |
 | «Немає зв'язку» під час кожного відключення | Роутер або провайдер без резервного живлення, станція не бачить хмару. Живіть роутер (і ONT) від станції. |

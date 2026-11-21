@@ -8,13 +8,14 @@ import aiohttp
 import pytest
 from aioresponses import aioresponses
 
-from bluetti_grid_bot.auth import OAuthClient, TokenManager
+from bluetti_grid_bot.auth import AuthExpiredError, OAuthClient, TokenManager
 from bluetti_grid_bot.cloud import (
     BIND_PATH,
     DEVICES_PATH,
     STATES_PATH,
     BluettiCloud,
     CloudError,
+    MultiStateSource,
     PollingStateSource,
     TransientCloudError,
     gateway_name,
@@ -56,12 +57,16 @@ async def session() -> AsyncIterator[aiohttp.ClientSession]:
 
 
 def make_cloud(
-    session: aiohttp.ClientSession, storage: Storage, gateway: str = "auto", **kw: Any
+    session: aiohttp.ClientSession,
+    storage: Storage,
+    gateway: str = "auto",
+    site: str = "",
+    **kw: Any,
 ) -> BluettiCloud:
-    storage.save_tokens(TokenSet("ACCESS", "REFRESH", None, 0.0))
-    tokens = TokenManager(session, OAUTH, storage, sleep=no_sleep)
+    storage.save_tokens(TokenSet(f"ACCESS{site}", "REFRESH", None, 0.0), site)
+    tokens = TokenManager(session, OAUTH, storage, site=site, sleep=no_sleep)
     kw.setdefault("sleep", no_sleep)
-    return BluettiCloud(session, tokens, storage, gateway=gateway, **kw)
+    return BluettiCloud(session, tokens, storage, gateway=gateway, site=site, **kw)
 
 
 def calls(m: aioresponses) -> list[tuple[str, str]]:
@@ -395,3 +400,101 @@ async def test_rebind_failure_is_not_fatal(
         m.post(EU + BIND_PATH, payload={"msgCode": 500, "message": "err"})
         samples = await source.fetch()
     assert samples == {SN: None}
+
+
+# several sites
+
+
+async def test_gateway_and_tokens_are_kept_per_site(
+    session: aiohttp.ClientSession, storage: Storage
+) -> None:
+    home = make_cloud(session, storage, site="home")
+    cottage = make_cloud(session, storage, site="cottage", probe_order=[US])
+    with aioresponses() as m:
+        m.get(EU + DEVICES_PATH, payload=ok([]))
+        m.get(US + DEVICES_PATH, payload=ok([]))
+        assert await home.gateway() == EU
+        assert await cottage.gateway() == US
+        sent = [r.kwargs["headers"]["Authorization"] for rs in m.requests.values() for r in rs]
+    assert sorted(sent) == ["ACCESScottage", "ACCESShome"]
+    assert (storage.get_gateway("home"), storage.get_gateway("cottage")) == (EU, US)
+    assert storage.get_gateway() is None
+    assert storage.get_tokens() is None
+
+
+def _site_source(
+    session: aiohttp.ClientSession, storage: Storage, site: str, gw: str, name: str = ""
+) -> PollingStateSource:
+    cloud = make_cloud(session, storage, gateway=gw, site=site)
+    return PollingStateSource(cloud, site_name=name, sleep=no_sleep, clock=Clock())
+
+
+async def test_multi_source_merges_sites_and_names_them(
+    session: aiohttp.ClientSession, storage: Storage
+) -> None:
+    source = MultiStateSource(
+        {
+            "home": _site_source(session, storage, "home", EU, "Дім"),
+            "cottage": _site_source(session, storage, "cottage", US, "Дача"),
+        }
+    )
+    with aioresponses() as m:
+        m.get(EU + DEVICES_PATH, payload=_devices(_device(SN)))
+        m.get(US + DEVICES_PATH, payload=_devices(_device("COTTAGE0001"), _device("COTTAGE0002")))
+        m.post(EU + BIND_PATH, payload=ok(None))
+        m.post(US + BIND_PATH, payload=ok(None))
+        m.get(states_url(EU), payload=_states((SN, "1", FULL)))
+        m.get(
+            states_url(US),
+            payload=_states(("COTTAGE0001", "1", FULL), ("COTTAGE0002", "1", FULL)),
+        )
+        stations = await source.start()
+        samples = await source.fetch()
+    assert [(s.sn, s.name) for s in stations] == [
+        (SN, "Дім"),
+        ("COTTAGE0001", "Дача …0001"),
+        ("COTTAGE0002", "Дача …0002"),
+    ]
+    assert set(samples) == {SN, "COTTAGE0001", "COTTAGE0002"}
+    assert source.errors == {}
+
+
+async def test_multi_source_keeps_working_sites(
+    session: aiohttp.ClientSession, storage: Storage
+) -> None:
+    source = MultiStateSource(
+        {
+            "home": _site_source(session, storage, "home", EU),
+            "cottage": _site_source(session, storage, "cottage", US),
+        }
+    )
+    with aioresponses() as m:
+        m.get(EU + DEVICES_PATH, payload=_devices(_device(SN)), repeat=True)
+        m.get(US + DEVICES_PATH, payload={"msgCode": 401, "message": "no"})
+        m.post(EU + BIND_PATH, payload=ok(None))
+        m.post(US + BIND_PATH, payload=ok(None))
+        m.get(states_url(EU), payload=_states((SN, "1", FULL)), repeat=True)
+        stations = await source.start()
+        assert [s.sn for s in stations] == [SN]
+        assert set(source.errors) == {"cottage"}
+        # The cottage starts on the next fetch and its station shows up.
+        m.get(US + DEVICES_PATH, payload=_devices(_device("COTTAGE0001")))
+        m.get(states_url(US), payload=_states(("COTTAGE0001", "1", FULL)))
+        samples = await source.fetch()
+    assert set(samples) == {SN, "COTTAGE0001"}
+    assert [s.sn for s in source.stations] == [SN, "COTTAGE0001"]
+    assert source.errors == {}
+
+
+async def test_multi_source_raises_when_every_site_fails(
+    session: aiohttp.ClientSession, storage: Storage
+) -> None:
+    home = _site_source(session, storage, "home", EU)
+    cottage = _site_source(session, storage, "cottage", US)
+    storage.save_tokens(TokenSet(None, None, None, 0.0), "cottage")  # no login
+    source = MultiStateSource({"home": home, "cottage": cottage})
+    with aioresponses() as m:
+        m.get(EU + DEVICES_PATH, payload={"msgCode": 401, "message": "no"})
+        with pytest.raises(AuthExpiredError, match="login --station cottage"):
+            await source.start()
+    assert set(source.errors) == {"home", "cottage"}

@@ -20,6 +20,11 @@ All notable changes to this project are documented here. The format follows
 - PostgreSQL as an alternative to SQLite (`DATABASE_URL`, optionally `DATABASE_USERNAME` /
   `DATABASE_PASSWORD`; `postgres` extra, included in the Docker image). The Helm chart accepts
   them as secrets and has its own README.
+- Several stations with their own BLUETTI logins, e.g. on different accounts
+  (`BLUETTI_STATIONS=home,cottage` and `BLUETTI_<ID>_NAME`, `_REFRESH_TOKEN`, `_GATEWAY`,
+  `_DEVICE_SNS` per station; `login --station <id>`, `make login STATION=<id>`). An expired
+  login of one station is reported by name and does not stop the others. The Helm chart takes
+  them as a `stations` map (`name`, `gateway`, `deviceSns`, `refreshToken` per station).
 
 ## [0.1.0] - 2026-11-20
 

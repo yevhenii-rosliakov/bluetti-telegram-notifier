@@ -7,7 +7,7 @@ import contextlib
 import logging
 import secrets
 import signal
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 
@@ -17,8 +17,8 @@ from aiogram.exceptions import TelegramAPIError, TelegramUnauthorizedError
 
 from . import __version__
 from .auth import AuthError, OAuthClient, TokenManager, extract_code
-from .cloud import BluettiCloud, CloudError, PollingStateSource, gateway_name
-from .config import ConfigError, Settings
+from .cloud import BluettiCloud, CloudError, MultiStateSource, PollingStateSource, gateway_name
+from .config import ConfigError, Settings, Site
 from .detector import classify
 from .health import HealthServer, Metrics
 from .messages import Formatter, Translator
@@ -53,37 +53,63 @@ def open_storage(s: Settings) -> Storage:
 
 
 @dataclass
-class _Cloud:
-    session: aiohttp.ClientSession
-    storage: Storage
+class _SiteClient:
+    site: Site
     tokens: TokenManager
     cloud: BluettiCloud
 
 
+@dataclass
+class _Cloud:
+    session: aiohttp.ClientSession
+    storage: Storage
+    sites: list[_SiteClient]
+
+
 @asynccontextmanager
-async def _cloud(s: Settings) -> AsyncIterator[_Cloud]:
+async def _cloud(s: Settings, sites: Sequence[Site] | None = None) -> AsyncIterator[_Cloud]:
+    """Storage, HTTP session and one cloud client per site (default: all configured)."""
     try:
         storage = open_storage(s)
     except StorageError as exc:
         raise ConfigError(str(exc)) from exc
     try:
         async with aiohttp.ClientSession() as session:
-            tokens = TokenManager(
-                session,
-                oauth_client(s),
-                storage,
-                seed_refresh_token=(
-                    s.bluetti_refresh_token.get_secret_value() if s.bluetti_refresh_token else None
-                ),
-                seed_access_token=(
-                    s.bluetti_access_token.get_secret_value() if s.bluetti_access_token else None
-                ),
-            )
-            yield _Cloud(
-                session, storage, tokens, BluettiCloud.from_settings(session, tokens, storage, s)
-            )
+            clients = []
+            for site in s.sites if sites is None else sites:
+                tokens = TokenManager(
+                    session,
+                    oauth_client(s),
+                    storage,
+                    seed_refresh_token=(
+                        site.refresh_token.get_secret_value() if site.refresh_token else None
+                    ),
+                    seed_access_token=(
+                        site.access_token.get_secret_value() if site.access_token else None
+                    ),
+                    site=site.id,
+                )
+                cloud = BluettiCloud.for_site(
+                    session, tokens, storage, site, s.bluetti_gateway_probe_order
+                )
+                clients.append(_SiteClient(site, tokens, cloud))
+            yield _Cloud(session, storage, clients)
     finally:
         storage.close()
+
+
+def _state_source(s: Settings, c: _Cloud) -> MultiStateSource:
+    return MultiStateSource(
+        {
+            sc.site.id: PollingStateSource(
+                sc.cloud,
+                sns=sc.site.device_sns,
+                names=s.bluetti_device_names,
+                site_name=sc.site.name,
+            )
+            for sc in c.sites
+        }
+    )
 
 
 # run
@@ -118,7 +144,7 @@ async def run_service(s: Settings) -> int:
     formatter = Formatter(t, s.zone, names={})
 
     async with _cloud(s) as c:
-        source = PollingStateSource(c.cloud, sns=s.bluetti_device_sns, names=s.bluetti_device_names)
+        source = _state_source(s, c)
         bot = Bot(token=s.telegram_bot_token.get_secret_value())
         notifier = TelegramNotifier(bot, s.telegram_chat_ids, metrics)
         schedule = None
@@ -183,7 +209,7 @@ async def run_service(s: Settings) -> int:
 
 
 LOGIN_HELP = """
-BLUETTI login
+BLUETTI login{title}
 =============
 1. Open this link in a browser and sign in with the BLUETTI account that OWNS the station:
 
@@ -199,10 +225,20 @@ BLUETTI login
 """
 
 
-def login(s: Settings, read_line: Callable[[str], str] = input) -> int:
+def login(s: Settings, station: str | None = None, read_line: Callable[[str], str] = input) -> int:
+    if station:
+        site = s.site(station)
+    elif s.bluetti_stations:
+        raise ConfigError(
+            "BLUETTI_STATIONS is set: choose the station to sign in for with "
+            f"`login --station <id>` (one of: {', '.join(s.bluetti_stations)})"
+        )
+    else:
+        site = s.sites[0]
     oauth = oauth_client(s)
     state = secrets.token_urlsafe(16)
-    print(LOGIN_HELP.format(url=oauth.authorize_url(state)))
+    title = f" for station {site.id!r}" if site.id else ""
+    print(LOGIN_HELP.format(title=title, url=oauth.authorize_url(state)))
     try:
         pasted = read_line("Redirected URL: ")
     except (EOFError, KeyboardInterrupt):
@@ -218,13 +254,14 @@ def login(s: Settings, read_line: Callable[[str], str] = input) -> int:
             "\nWarning: 'state' does not match this login attempt (URL from an earlier try?). "
             "Continuing anyway."
         )
-    return asyncio.run(_finish_login(s, code))
+    return asyncio.run(_finish_login(s, site, code))
 
 
-async def _finish_login(s: Settings, code: str) -> int:
-    async with _cloud(s) as c:
+async def _finish_login(s: Settings, site: Site, code: str) -> int:
+    async with _cloud(s, [site]) as c:
+        (sc,) = c.sites
         try:
-            tokens = await c.tokens.exchange_code(code)
+            tokens = await sc.tokens.exchange_code(code)
         except AuthError as exc:
             print(
                 f"\nToken exchange failed: {exc}\n"
@@ -233,12 +270,12 @@ async def _finish_login(s: Settings, code: str) -> int:
             return 1
         print(f"\nSigned in. Tokens saved to {s.db_path}")
         try:
-            if s.bluetti_gateway == "auto":
+            if site.gateway == "auto":
                 print("\nProbing gateways:")
-                gateway = await c.cloud.probe_gateway()
+                gateway = await sc.cloud.probe_gateway()
             else:
-                gateway = await c.cloud.gateway()
-            devices = await c.cloud.list_devices()
+                gateway = await sc.cloud.gateway()
+            devices = await sc.cloud.list_devices()
         except (CloudError, AuthError) as exc:
             print(f"\nCould not list stations: {exc}")
             return 1
@@ -255,9 +292,17 @@ async def _finish_login(s: Settings, code: str) -> int:
         print(
             "\nAdd these lines to .env (or your Kubernetes Secret / values). Keep them private:\n"
         )
-        print(f"BLUETTI_REFRESH_TOKEN={tokens.refresh_token or ''}")
-        print(f"BLUETTI_GATEWAY={gateway_name(gateway)}")
-        print(f"BLUETTI_DEVICE_SNS={','.join(cloud_sns)}")
+        if site.id and site.id not in s.bluetti_stations:
+            print(f"BLUETTI_STATIONS={','.join([*s.bluetti_stations, site.id])}")
+        if site.id:
+            name = site.name or (devices[0].name if len(devices) == 1 else "") or site.id
+            print(f"{site.var('NAME')}={name}")
+        print(f"{site.var('REFRESH_TOKEN')}={tokens.refresh_token or ''}")
+        print(f"{site.var('GATEWAY')}={gateway_name(gateway)}")
+        print(f"{site.var('DEVICE_SNS')}={','.join(cloud_sns)}")
+        if site.id and not s.bluetti_stations and (s.bluetti_refresh_token or s.bluetti_device_sns):
+            print("\nRemove BLUETTI_REFRESH_TOKEN and BLUETTI_DEVICE_SNS: with BLUETTI_STATIONS")
+            print("every station has its own BLUETTI_<ID>_... settings.")
         return 0
 
 
@@ -267,26 +312,34 @@ async def _finish_login(s: Settings, code: str) -> int:
 async def check(s: Settings) -> int:
     cfg = s.detector_config()
     async with _cloud(s) as c:
+        ok = True
+        for sc in c.sites:
+            prefix = f"[{sc.site.id}] " if sc.site.id else ""
+            try:
+                gateway = await sc.cloud.gateway()
+            except (CloudError, AuthError) as exc:
+                print(f"{prefix}Error: {exc}")
+                ok = False
+            else:
+                print(f"{prefix}Gateway: {gateway_name(gateway)} ({gateway})")
+        source = _state_source(s, c)
         try:
-            gateway = await c.cloud.gateway()
-            print(f"Gateway: {gateway_name(gateway)} ({gateway})")
-            source = PollingStateSource(
-                c.cloud, sns=s.bluetti_device_sns, names=s.bluetti_device_names
-            )
             stations = await source.start()
             print(f"Bound {len(stations)} station(s); fetching state...")
             samples = await source.fetch()
         except (CloudError, AuthError) as exc:
             print(f"Error: {exc}")
             return 1
+        for site, err in source.errors.items():
+            print(f"[{site}] Error: {err}")
+            ok = False
 
         print(
             f"\nDetection: mode={cfg.mode.value} load>={cfg.load_threshold_w:g} W "
             f"grid>={cfg.grid_threshold_w:g} W debounce={cfg.debounce_polls}/"
             f"{cfg.restore_debounce_polls} polls"
         )
-        ok = True
-        for st in stations:
+        for st in source.stations:
             sample = samples.get(st.sn)
             print(f"\n{st.name}  (SN {st.sn}, model {st.model or '?'})")
             if sample is None or not sample.has_data:

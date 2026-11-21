@@ -7,14 +7,14 @@ import contextlib
 import json
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from typing import Protocol
 
 from .auth import AuthError, AuthExpiredError
 from .cloud import CloudError, StateSource
-from .config import Settings
+from .config import Settings, Site
 from .detector import DeviceState, evaluate
 from .events import (
     BotStartedOnBattery,
@@ -29,7 +29,7 @@ from .messages import Formatter, StationView
 from .models import GridState, Reading, Sample, Station, parse_reading
 from .schedule import KYIV, ScheduleService, day_fingerprints
 from .stats import typical_duration
-from .storage import Outage, Storage
+from .storage import Outage, Storage, scoped
 
 log = logging.getLogger(__name__)
 
@@ -88,7 +88,11 @@ class Monitor:
         self.online: dict[str, bool] = {}
         self.last_data: dict[str, datetime] = {}
         self.last_success: datetime | None = None
-        self.auth_expired = False
+        self.sites = {site.id: site for site in settings.sites}
+        # Sites whose login is rejected; "" is the single-account login.
+        self.expired_sites: set[str] = set()
+        # Every site's login is rejected: poll slowly, skip /status refreshes.
+        self._auth_blocked = False
         self._start_failures = 0
         self._heartbeat = monotonic()
         self._started = monotonic()
@@ -115,18 +119,24 @@ class Monitor:
         """Discover and bind stations. Returns the delay before the next loop step."""
         try:
             stations = await self.source.start()
-        except AuthExpiredError as exc:
-            await self._auth_failed(exc)
-            return AUTH_RETRY_S
         except (CloudError, AuthError) as exc:
+            await self._update_auth(self.source.errors or {"": exc}, failed=True)
+            if isinstance(exc, AuthExpiredError):
+                return AUTH_RETRY_S
             self._start_failures += 1
             delay = min(START_RETRY_MAX_S, 15.0 * 2.0**self._start_failures)
             log.warning("Could not discover stations (%s); retrying in %.0f s", exc, delay)
             return delay
-        await self._auth_ok()
+        await self._update_auth(self.source.errors, failed=False)
         self._start_failures = 0
-        self.stations = stations
-        self.formatter.names = {s.sn: s.name for s in stations}
+        self._add_stations(stations)
+        log.info("Monitoring %d station(s) in %s mode", len(stations), self.cfg.mode.value)
+        log.debug("Stations: %s", ", ".join(s.sn for s in stations))
+        return 0.0
+
+    def _add_stations(self, stations: Sequence[Station]) -> None:
+        self.stations = [*self.stations, *stations]
+        self.formatter.names = {s.sn: s.name for s in self.stations}
         for st in stations:
             state, raw, polled_at = self.storage.load_device(st.sn)
             # Every process start re-baselines silently (see detector._baseline).
@@ -135,9 +145,6 @@ class Monitor:
                 self.readings[st.sn] = parse_reading(raw)[0]
             if polled_at:
                 self.last_data[st.sn] = polled_at
-        log.info("Monitoring %d station(s) in %s mode", len(stations), self.cfg.mode.value)
-        log.debug("Stations: %s", ", ".join(s.sn for s in stations))
-        return 0.0
 
     async def poll_once(self) -> float:
         now = self._now()
@@ -145,23 +152,27 @@ class Monitor:
         try:
             async with self._fetch_lock:
                 samples = await self.source.fetch()
-        except AuthExpiredError as exc:
-            self.metrics.polls.labels("auth_error").inc()
-            await self._auth_failed(exc)
         except (CloudError, AuthError) as exc:
-            self.metrics.polls.labels("error").inc()
-            log.warning("Poll failed: %s", exc)
+            auth = isinstance(exc, AuthExpiredError)
+            self.metrics.polls.labels("auth_error" if auth else "error").inc()
+            if not auth:
+                log.warning("Poll failed: %s", exc)
+            await self._update_auth(self.source.errors or {"": exc}, failed=True)
         else:
             self.metrics.polls.labels("ok").inc()
             self.last_success = now
             self.metrics.last_success.set(now.timestamp())
-            await self._auth_ok()
+            await self._update_auth(self.source.errors, failed=False)
+            # A site that could not start earlier may have started now.
+            if new := [st for st in self.source.stations if st.sn not in self.states]:
+                self._add_stations(new)
+                log.info("Monitoring %d more station(s)", len(new))
 
         for st in self.stations:
             await self._process(st, samples.get(st.sn), now)
         await self._weekly_summary(now)
         await self._schedule_alerts(now)
-        return AUTH_RETRY_S if self.auth_expired else float(self.settings.poll_interval_seconds)
+        return AUTH_RETRY_S if self._auth_blocked else float(self.settings.poll_interval_seconds)
 
     async def _process(self, st: Station, sample: Sample | None, now: datetime) -> None:
         if sample is not None:
@@ -313,20 +324,41 @@ class Monitor:
 
     # auth notifications
 
-    async def _auth_failed(self, exc: AuthExpiredError) -> None:
-        if not self.auth_expired:
-            log.error("BLUETTI login expired: %s", exc)
-        self.auth_expired = True
-        if self.storage.get(_AUTH_NOTIFIED_KEY) is None:
-            self.storage.set(_AUTH_NOTIFIED_KEY, self._now().isoformat())
-            await self.sender.broadcast(self.formatter.t("auth_expired"))
+    @property
+    def auth_expired(self) -> bool:
+        return bool(self.expired_sites)
 
-    async def _auth_ok(self) -> None:
-        self.auth_expired = False
-        if self.storage.get(_AUTH_NOTIFIED_KEY) is not None:
-            self.storage.set(_AUTH_NOTIFIED_KEY, None)
-            log.info("BLUETTI login works again")
-            await self.sender.broadcast(self.formatter.t("auth_restored"))
+    async def _update_auth(self, errors: Mapping[str, Exception], *, failed: bool) -> None:
+        """Notify about logins that expired, and (unless the whole call ``failed``) about
+        logins that work again."""
+        for site, exc in errors.items():
+            if isinstance(exc, AuthExpiredError):
+                await self._auth_failed(exc, site)
+        if not failed:
+            for site in self.sites:
+                if site not in errors:
+                    await self._auth_ok(site)
+        self._auth_blocked = failed and set(self.sites) <= self.expired_sites
+
+    def _site(self, site: str) -> Site:
+        return self.sites.get(site) or Site(site)
+
+    async def _auth_failed(self, exc: AuthExpiredError, site: str = "") -> None:
+        if site not in self.expired_sites:
+            log.error("BLUETTI login %sexpired: %s", f"of station {site} " if site else "", exc)
+        self.expired_sites.add(site)
+        key = scoped(_AUTH_NOTIFIED_KEY, site)
+        if self.storage.get(key) is None:
+            self.storage.set(key, self._now().isoformat())
+            await self.sender.broadcast(self.formatter.auth_expired(self._site(site)))
+
+    async def _auth_ok(self, site: str = "") -> None:
+        self.expired_sites.discard(site)
+        key = scoped(_AUTH_NOTIFIED_KEY, site)
+        if self.storage.get(key) is not None:
+            self.storage.set(key, None)
+            log.info("BLUETTI login %sworks again", f"of station {site} " if site else "")
+            await self.sender.broadcast(self.formatter.auth_restored(self._site(site)))
 
     # views for /status, /history and the health endpoints
 
@@ -359,7 +391,7 @@ class Monitor:
         for /status often does not shorten the debounce of outage detection. On failure the
         last known values are shown (with their poll time).
         """
-        if not self.stations or self.auth_expired:
+        if not self.stations or self._auth_blocked:
             return
         mono = self._monotonic()
         if self._last_refresh is not None and mono - self._last_refresh < REFRESH_MIN_INTERVAL_S:
@@ -387,9 +419,10 @@ class Monitor:
         return self.formatter.status(
             self.views(with_stats=True),
             self._now(),
-            self.auth_expired,
+            "" in self.expired_sites,
             STATS_DAYS,
             self.schedule.current if self.schedule is not None else None,
+            expired_sites=[self._site(s) for s in sorted(self.expired_sites) if s],
         )
 
     def stats_text(self, days: int) -> str:

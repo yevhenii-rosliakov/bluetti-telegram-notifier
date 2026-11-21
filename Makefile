@@ -43,8 +43,8 @@ ps: ## Show container status and health
 check: data ## Poll the station once and show what the detector decides
 	$(COMPOSE) run --rm $(SERVICE) check
 
-login: data ## Sign in to BLUETTI interactively and store the tokens
-	$(COMPOSE) run --rm $(SERVICE) login
+login: data ## Sign in to BLUETTI interactively and store the tokens (STATION=id for one of several)
+	$(COMPOSE) run --rm $(SERVICE) login $(if $(STATION),--station $(STATION))
 
 backup: ## Stop the bot, archive ./data to bot-data.tgz (BACKUP=path), start again
 	$(COMPOSE) stop $(SERVICE)

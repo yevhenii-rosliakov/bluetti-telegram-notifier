@@ -49,7 +49,8 @@ for your model.
 
 1. [Prerequisites](#prerequisites)
 2. [Quick start (Docker)](#quick-start-docker)
-3. [Getting the BLUETTI token](#getting-the-bluetti-token)
+3. [Getting the BLUETTI token](#getting-the-bluetti-token) ·
+   [Several stations in different places](#several-stations-in-different-places)
 4. [Choosing `DETECTION_MODE`](#choosing-detection_mode)
 5. [Recommended station settings](#recommended-station-settings)
 6. [Configuration reference](#configuration-reference)
@@ -142,6 +143,101 @@ Notes:
 - If the refresh token stops working, the bot sends "BLUETTI login expired, run `login`
   again" once and retries every 5 minutes. A `login` run against the same `STATE_DIR` is
   picked up without a restart.
+
+## Several stations in different places
+
+The bot can watch several stations at once, e.g. one at home and one at the cottage. Every
+station gets a short **id** (letters and digits, e.g. `home`, `cottage`), its own display
+**name**, and its own BLUETTI login: refresh token, gateway and serial numbers. Each station
+gets its own outage messages, and `/status`, `/stats` and the weekly summary show every
+station.
+
+> Are both stations on **the same** BLUETTI account? Then you don't need this section: one
+> `login` lists both stations. Put both serial numbers into `BLUETTI_DEVICE_SNS` and name them
+> with `BLUETTI_DEVICE_NAMES=SN1=Home,SN2=Cottage`. Use the setup below when the stations
+> belong to different BLUETTI accounts, or when you want a separate login per station.
+
+### 1. List the stations
+
+In `.env`, list the ids in `BLUETTI_STATIONS`. With `BLUETTI_STATIONS` set, the single-station
+variables `BLUETTI_REFRESH_TOKEN` and `BLUETTI_DEVICE_SNS` must be **removed**, because every
+station has its own:
+
+```dotenv
+BLUETTI_STATIONS=home,cottage
+```
+
+### 2. Sign in once per station
+
+Run `login` with `--station <id>` for each station, signing in with **the BLUETTI account
+that owns that station**:
+
+| Where | Command |
+|---|---|
+| Docker (make) | `make login STATION=home`, then `make login STATION=cottage` |
+| Docker Compose | `docker compose run --rm bot login --station home` |
+| Python | `bluetti-grid-bot login --station home` |
+| Kubernetes | `kubectl exec -it deploy/<release> -- bluetti-grid-bot login --station home` |
+
+Every run works exactly like [the single-station login](#getting-the-bluetti-token): open
+the link, sign in, copy the address of the "My Home Assistant" page, and paste it. Then:
+
+- **Use a private/incognito browser window for each station** (or sign out of
+  `sso.bluettipower.com` between the runs). Otherwise the browser is still signed in to the
+  first account and the second `login` would get a token for the wrong account.
+- `login --station <id>` lists the stations **of that account** and prints that station's
+  lines, already prefixed with its id:
+  ```
+  BLUETTI_HOME_NAME=Home
+  BLUETTI_HOME_REFRESH_TOKEN=…
+  BLUETTI_HOME_GATEWAY=eu
+  BLUETTI_HOME_DEVICE_SNS=PR200V2XXXXXXXXXXXXXX
+  ```
+  Copy them into `.env`. Change `BLUETTI_HOME_NAME` to the name you want in the messages.
+  If the id is not in `BLUETTI_STATIONS` yet, `login` also prints the new `BLUETTI_STATIONS`
+  line.
+- The tokens are stored in the state per station, so the two logins don't overwrite each
+  other.
+
+### 3. The resulting `.env`
+
+```dotenv
+BLUETTI_STATIONS=home,cottage
+
+BLUETTI_HOME_NAME=Home
+BLUETTI_HOME_REFRESH_TOKEN=eyJ…
+BLUETTI_HOME_GATEWAY=eu
+BLUETTI_HOME_DEVICE_SNS=PR200V2XXXXXXXXXXXXXX
+
+BLUETTI_COTTAGE_NAME=Cottage
+BLUETTI_COTTAGE_REFRESH_TOKEN=eyJ…
+BLUETTI_COTTAGE_GATEWAY=eu
+BLUETTI_COTTAGE_DEVICE_SNS=AC180XXXXXXXXXXXXXXX
+```
+
+Then `make check` (or `bluetti-grid-bot check`) shows every station, and `make up` starts the
+bot.
+
+| Variable | Default | Notes |
+|---|---|---|
+| `BLUETTI_<ID>_NAME` | the name in the BLUETTI app | shown in messages; with several serial numbers it becomes `Name …1234` (`BLUETTI_DEVICE_NAMES` still wins) |
+| `BLUETTI_<ID>_REFRESH_TOKEN` | — | from `login --station <id>`; seeds the state like `BLUETTI_REFRESH_TOKEN` |
+| `BLUETTI_<ID>_GATEWAY` | `BLUETTI_GATEWAY` | `auto` / `eu` / `global` / `us` / URL |
+| `BLUETTI_<ID>_DEVICE_SNS` | all of that account | comma-separated serial numbers |
+| `BLUETTI_<ID>_ACCESS_TOKEN` | — | debugging only |
+
+Notes:
+- If one station's login expires, the bot names that station in the message ("The BLUETTI
+  login of Cottage has expired … `login --station cottage`") and keeps monitoring the others.
+  Fix it with `login --station cottage`.
+- If one station's account or gateway fails while the other works, only that station is
+  reported as offline after `OFFLINE_GRACE_SECONDS`.
+- `BLUETTI_GATEWAY_PROBE_ORDER`, the detection settings, the schedule and the Telegram
+  settings are shared by all stations.
+- **Switching from one station to several:** the existing login is stored without an id and
+  is not reused. Add `BLUETTI_STATIONS`, remove `BLUETTI_REFRESH_TOKEN` / `BLUETTI_DEVICE_SNS`,
+  and run `login --station <id>` for every station, including the one you already had. The
+  outage history is kept, because it is stored by serial number.
 
 ## Choosing `DETECTION_MODE`
 
@@ -238,6 +334,7 @@ the bot at startup with a message naming the variable. See [.env.example](.env.e
 | `BLUETTI_GATEWAY_PROBE_ORDER` | `eu,global,us` | order for `auto` |
 | `BLUETTI_DEVICE_SNS` | empty = all | comma-separated serial numbers |
 | `BLUETTI_DEVICE_NAMES` | — | `SN1=Mom's flat,SN2=Garage`; shown when several stations are monitored |
+| `BLUETTI_STATIONS` | — | several stations with their own logins: `home,cottage`; then `BLUETTI_<ID>_NAME`, `_REFRESH_TOKEN`, `_GATEWAY`, `_DEVICE_SNS` per station, see [Several stations](#several-stations-in-different-places) |
 | `BLUETTI_SSO_URL` | `https://sso.bluettipower.com` | |
 | `BLUETTI_CLIENT_ID` | `HomeAssistant` | HA integration's public client |
 | `BLUETTI_CLIENT_SECRET` | `SG9tZUFzc2lzdGFudA==` | sent as-is |
@@ -311,6 +408,9 @@ how to mount the PVC or use PostgreSQL, and every setting.
 - `config.*` holds every non-secret variable (ConfigMap); `secrets.*` creates a Secret, or
   point `existingSecret` at your own Secret with the keys `TELEGRAM_BOT_TOKEN` and
   `BLUETTI_REFRESH_TOKEN` (all its keys become env vars).
+- Several stations: describe them in the `stations` map (`name`, `gateway`, `deviceSns`,
+  `refreshToken` per station id); the chart renders the `BLUETTI_<ID>_*` variables. See the
+  [chart README](charts/bluetti-grid-bot/README.md#several-stations).
 - Runs as UID 10001 with a read-only root filesystem, all capabilities dropped, probes on
   `/healthz` and `/readyz`. `metrics.enabled` + `metrics.serviceMonitor.enabled` add a
   Service and a `ServiceMonitor`.
@@ -424,7 +524,9 @@ With Helm: scale the Deployment to 0, copy the PVC contents to the new cluster's
 | `online=0`, empty `stateList` | The station must be **bound** to the API client (`bindDevices`). The bot does this at startup and again (at most every 5 min) when a station returns no data. If it persists, the station really is offline: check its Wi-Fi (2.4 GHz) in the BLUETTI app. |
 | `No BLUETTI gateway accepted the token` | Token invalid, or the account is in a data center not in `BLUETTI_GATEWAY_PROBE_ORDER`. Run `login` again; try `BLUETTI_GATEWAY=eu`/`global`/`us`. |
 | Wrong gateway after moving the account | With `auto` the gateway is cached in `STATE_DIR`; it is forgotten and re-probed automatically when it rejects calls. |
-| "BLUETTI login expired" | The refresh token was revoked (e.g. password change, too long offline). Run `login` again. |
+| "BLUETTI login expired" | The refresh token was revoked (e.g. password change, too long offline). Run `login` again (`login --station <id>` for the station named in the message). |
+| `BLUETTI_<ID>_* is set but '<id>' is not listed in BLUETTI_STATIONS` | Add the id to `BLUETTI_STATIONS`, or remove those variables. |
+| `login` with several stations gets the wrong account | The browser was still signed in to the other account. Use a private window for each `login --station`. |
 | No stations listed in `login` | Sign in with the account that **owns** the station, not one it was shared with. Only stations with `cloud=1` (Wi-Fi) are polled. |
 | Outage not detected | Run `check` during an outage; adjust `DETECTION_MODE` / `LOAD_THRESHOLD_W`. Check that AC ECO is off and AC output on. |
 | "No connection" during every outage | Your router or ISP has no backup power, so the station can't reach the cloud. Power the router (and ONT) from the station. |
