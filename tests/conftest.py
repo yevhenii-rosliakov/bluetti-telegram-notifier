@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -79,8 +80,24 @@ def make_settings(tmp_path: Path, **overrides: Any) -> Settings:
     return Settings(_env_file=None, **values)
 
 
-@pytest.fixture
-def storage(tmp_path: Path) -> Iterator[Storage]:
-    st = Storage(tmp_path / "state.sqlite3")
+# PostgreSQL tests run when this points at a disposable database (its tables are dropped).
+PG_URL = os.environ.get("TEST_DATABASE_URL", "")
+needs_pg = pytest.mark.skipif(not PG_URL, reason="TEST_DATABASE_URL is not set")
+
+
+def reset_pg() -> None:
+    import psycopg
+
+    with psycopg.connect(PG_URL, autocommit=True) as conn:
+        conn.execute("DROP TABLE IF EXISTS kv, device_state, outages")
+
+
+@pytest.fixture(params=["sqlite", pytest.param("postgres", marks=needs_pg)])
+def storage(request: pytest.FixtureRequest, tmp_path: Path) -> Iterator[Storage]:
+    if request.param == "postgres":
+        reset_pg()
+        st = Storage.postgres(PG_URL)
+    else:
+        st = Storage.sqlite(tmp_path / "state.sqlite3")
     yield st
     st.close()

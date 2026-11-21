@@ -5,7 +5,7 @@ metadata:
   labels:
     {{- include "bgb.labels" . | nindent 4 }}
 spec:
-  # Single poller with a SQLite file: never run two pods at once.
+  # Single poller (rotating refresh token, one Telegram poller): never run two pods at once.
   replicas: 1
   strategy:
     type: Recreate

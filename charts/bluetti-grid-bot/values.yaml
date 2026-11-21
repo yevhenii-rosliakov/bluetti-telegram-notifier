@@ -51,14 +51,21 @@ secrets:
   BLUETTI_REFRESH_TOKEN: ""
   BLUETTI_ACCESS_TOKEN: ""
   BLUETTI_CLIENT_SECRET: ""
+  # postgresql://user:password@host:5432/db; empty = SQLite on the volume below.
+  DATABASE_URL: ""
+  # Override the credentials in DATABASE_URL (no URL-encoding needed).
+  DATABASE_USERNAME: ""
+  DATABASE_PASSWORD: ""
 
 # Name of an existing Secret (e.g. created by External Secrets Operator or Vault)
 # with the keys TELEGRAM_BOT_TOKEN and BLUETTI_REFRESH_TOKEN (optionally
-# BLUETTI_ACCESS_TOKEN, BLUETTI_CLIENT_SECRET, TELEGRAM_CHAT_IDS). All keys become env vars.
+# BLUETTI_ACCESS_TOKEN, BLUETTI_CLIENT_SECRET, DATABASE_URL, DATABASE_USERNAME,
+# DATABASE_PASSWORD, TELEGRAM_CHAT_IDS). All keys become env vars.
 existingSecret: ""
 
 # State (tokens, last state, outage history) lives in a SQLite file on this volume.
-# Without persistence the rotated refresh token is lost on every restart.
+# Without persistence the rotated refresh token is lost on every restart, unless
+# DATABASE_URL points at PostgreSQL: then the volume is not needed.
 persistence:
   enabled: true
   size: 100Mi

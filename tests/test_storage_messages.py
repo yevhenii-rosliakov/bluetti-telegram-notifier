@@ -34,7 +34,7 @@ KYIV = ZoneInfo("Europe/Kyiv")  # UTC+2 in November
 
 def test_db_file_is_private(tmp_path: Path) -> None:
     path = tmp_path / "sub" / "db.sqlite3"
-    Storage(path).close()
+    Storage.sqlite(path).close()
     assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
 
 
@@ -78,10 +78,10 @@ def test_outage_history(storage: Storage) -> None:
 
 def test_writes_survive_reopen(tmp_path: Path) -> None:
     path = tmp_path / "db.sqlite3"
-    st = Storage(path)
+    st = Storage.sqlite(path)
     st.save_tokens(TokenSet("a", "r", None, 0))
     st.close()
-    st2 = Storage(path)
+    st2 = Storage.sqlite(path)
     assert st2.get_tokens() is not None
     st2.close()
 

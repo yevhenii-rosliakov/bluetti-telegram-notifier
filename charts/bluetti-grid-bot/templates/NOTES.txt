@@ -1,10 +1,11 @@
 bluetti-grid-bot is deployed as {{ include "bgb.fullname" . }} in namespace {{ .Release.Namespace }}.
 
-{{- if not .Values.persistence.enabled }}
+{{- if and (not .Values.persistence.enabled) (not .Values.secrets.DATABASE_URL) (not .Values.config.DATABASE_URL) }}
 
 WARNING: persistence is disabled (emptyDir). The BLUETTI refresh token rotates and the
 newest one is stored in /data; it will be LOST on every pod restart, and outage history
-too. Enable persistence.enabled for anything but a test.
+too. Enable persistence.enabled, or set DATABASE_URL (PostgreSQL)
+{{- if .Values.existingSecret }} - ignore this if {{ .Values.existingSecret }} or extraEnv already sets it{{ end }}.
 {{- end }}
 
 {{- if and (not .Values.existingSecret) (not .Values.secrets.TELEGRAM_BOT_TOKEN) }}
@@ -12,7 +13,7 @@ too. Enable persistence.enabled for anything but a test.
 WARNING: no TELEGRAM_BOT_TOKEN. Set secrets.TELEGRAM_BOT_TOKEN or existingSecret.
 {{- end }}
 
-Sign in to BLUETTI (once; tokens are stored on the volume and picked up within ~5 min):
+Sign in to BLUETTI (once; tokens are stored in the state and picked up within ~5 min):
 
   kubectl -n {{ .Release.Namespace }} exec -it deploy/{{ include "bgb.fullname" . }} -- bluetti-grid-bot login
 

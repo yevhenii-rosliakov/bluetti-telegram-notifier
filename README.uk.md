@@ -83,7 +83,7 @@ make logs
 `ghcr.io/yevhenii-rosliakov/bluetti-grid-bot`.
 
 Токени, вибраний gateway, останній стан станції та історія відключень зберігаються у файлі
-SQLite у теці `./data` (змонтована як `/data`). Не видаляйте цю теку: refresh-токен
+SQLite у теці `./data` (змонтована як `/data`) або в PostgreSQL, якщо задано `DATABASE_URL`. Не видаляйте цю теку: refresh-токен
 оновлюється, і найновіший зберігається тільки там. Вона в `.gitignore`; файли належать UID 10001
 з правами 0600, тому на Linux копіюйте її через `make backup` (або `sudo`).
 
@@ -244,6 +244,9 @@ docker compose run --rm bot check
 | `BOT_LANGUAGE` | `uk` | `uk` / `en` |
 | `TZ` | `UTC` | часовий пояс для повідомлень, напр. `Europe/Kyiv` |
 | `STATE_DIR` | `/data` | токени, стан, історія (SQLite) |
+| `DATABASE_URL` | — | `postgresql://user:password@host:5432/db`, щоб зберігати стан у PostgreSQL замість SQLite; таблиці створюються під час запуску |
+| `DATABASE_USERNAME` | — | замінює користувача з `DATABASE_URL` |
+| `DATABASE_PASSWORD` | — | замінює пароль із `DATABASE_URL`; кодувати спецсимволи не потрібно |
 | `LOG_LEVEL` | `INFO` | `DEBUG` також логує серійні номери |
 | `LOG_FORMAT` | `text` | `json` — рядки JSON |
 | `METRICS_ENABLED` | `false` | Prometheus `/metrics` |
@@ -253,6 +256,7 @@ docker compose run --rm bot check
 
 ```bash
 uv sync                     # або: python -m venv .venv && .venv/bin/pip install .
+                            # PostgreSQL (DATABASE_URL): uv sync --extra postgres / pip install '.[postgres]'
 export STATE_DIR=./data     # або в .env (читається з поточної теки)
 uv run bluetti-grid-bot login
 uv run bluetti-grid-bot check
@@ -278,9 +282,13 @@ helm install bluetti-grid-bot oci://ghcr.io/yevhenii-rosliakov/charts/bluetti-gr
 kubectl -n bluetti exec -it deploy/bluetti-grid-bot -- bluetti-grid-bot login
 ```
 
+Повний перелік параметрів, підключення PVC чи PostgreSQL і всі змінні описані в
+[README чарту](charts/bluetti-grid-bot/README.md) (англійською).
+
 - Одна репліка, `strategy: Recreate` — один опитувач із SQLite на PVC (`persistence.size: 100Mi`,
   `storageClass`, `existingClaim`). З `persistence.enabled=false` використовується `emptyDir`, і
-  оновлений токен губиться при перезапуску.
+  оновлений токен губиться при перезапуску — якщо тільки `DATABASE_URL` (у `secrets` або
+  `existingSecret`) не вказує на PostgreSQL; тоді PVC не потрібен.
 - `config.*` — усі несекретні змінні (ConfigMap); `secrets.*` створює Secret, або вкажіть
   `existingSecret` — власний Secret із ключами `TELEGRAM_BOT_TOKEN` і `BLUETTI_REFRESH_TOKEN`
   (усі його ключі стають змінними середовища).
@@ -296,7 +304,7 @@ kubectl -n bluetti exec -it deploy/bluetti-grid-bot -- bluetti-grid-bot login
 
 Увесь стан зберігається в одній базі SQLite у `./data`: токени BLUETTI (refresh-токен
 оновлюється при кожному використанні), вибраний шлюз, стан детектора для кожної станції та історія
-відключень. Щоб перенести бота, скопіюйте цю теку разом із `.env`.
+відключень. Щоб перенести бота, скопіюйте цю теку разом із `.env`. З `DATABASE_URL` достатньо перенести `.env`.
 
 Запускайте **лише один екземпляр одночасно**. Дві копії робитимуть недійсними токени одна одної, а
 Telegram дозволяє лише одне опитування на токен бота.
