@@ -7,6 +7,8 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- High load alert on battery, e.g. a heater left on when the power went out (`HIGH_LOAD_W`,
+  default 1000 W; once per outage, after `DEBOUNCE_POLLS` polls).
 - `/status` shows outage statistics for the last 7 days: number of outages, total time
   without power (and the share of time with power), longest outage.
 - `/stats [days]`: outage statistics (default 30 days) with a breakdown by day and by hour.
@@ -25,6 +27,9 @@ All notable changes to this project are documented here. The format follows
   `_DEVICE_SNS` per station; `login --station <id>`, `make login STATION=<id>`). An expired
   login of one station is reported by name and does not stop the others. The Helm chart takes
   them as a `stations` map (`name`, `gateway`, `deviceSns`, `refreshToken` per station).
+
+### Changed
+- `LOW_SOC_THRESHOLDS` defaults to `50,25` (was `30,15`).
 
 ## [0.1.0] - 2026-11-20
 

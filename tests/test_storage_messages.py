@@ -15,6 +15,7 @@ from bluetti_grid_bot.events import (
     BotStartedOnGrid,
     GridLost,
     GridRestored,
+    HighLoad,
     LowBattery,
     OutageEndedUnobserved,
     StationOffline,
@@ -161,8 +162,13 @@ def test_other_event_messages() -> None:
     )
     assert "grid power is present" in (f.event(BotStartedOnGrid(SN, 100), now) or "")
     low = f.event(LowBattery(SN, 15, 14.6, 90), now) or ""
-    assert "Low battery: 14.6% (threshold 15%)" in low
+    assert "Battery is down to 14.6% (alert at 15%)" in low
     assert "1 h 30 min" in low
+    high = f.event(HighLoad(SN, 1850, 64, 70), now) or ""
+    assert high.startswith("⚠️ High load on battery: 1850 W.")
+    assert "heater" in high
+    assert "Battery: 64%" in high
+    assert "1 h 10 min" in high
     off = f.event(StationOffline(SN, at(10), at(9)), now) or ""
     assert "No connection" in off
     assert "outage" in off  # honest about what it often means

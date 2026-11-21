@@ -20,7 +20,8 @@ def test_defaults(tmp_path: Path) -> None:
     assert s.bluetti_redirect_uri == "https://my.home-assistant.io/redirect/oauth"
     assert s.poll_interval_seconds == 60
     assert s.detection_mode is DetectionMode.ATS
-    assert s.low_soc_thresholds == [30, 15]
+    assert s.low_soc_thresholds == [50, 25]
+    assert s.high_load_w == 1000
     assert s.bot_language == "uk"
     assert s.state_dir == Path("/data")
     assert s.tz == "UTC"

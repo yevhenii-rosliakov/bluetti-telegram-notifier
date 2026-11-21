@@ -19,6 +19,7 @@ from .events import (
     Event,
     GridLost,
     GridRestored,
+    HighLoad,
     LowBattery,
     OutageEndedUnobserved,
     StationOffline,
@@ -36,8 +37,10 @@ class DetectorConfig:
     debounce_polls: int = 2
     restore_debounce_polls: int = 2
     offline_grace: timedelta = timedelta(seconds=600)
-    low_soc_thresholds: tuple[int, ...] = (30, 15)
+    low_soc_thresholds: tuple[int, ...] = (50, 25)
     alert_ac_off: bool = True
+    # Alert when the load on battery stays at or above this many watts; 0 disables.
+    high_load_w: float = 1000.0
     # Report when the battery reaches this SOC after grid power came back; 0 disables.
     full_charge_soc: int = 100
 
@@ -70,6 +73,8 @@ class DeviceState:
     low_soc_fired: tuple[int, ...] = ()
     ac_off_count: int = 0
     ac_off_alerted: bool = False
+    high_load_count: int = 0
+    high_load_alerted: bool = False
     # Grid came back with the battery below ``full_charge_soc``: report when it is full.
     charging_since: datetime | None = None
     # passthrough mode: SOC at the last poll that showed grid input.
@@ -224,6 +229,7 @@ def _baseline(
             s.power_since = now
             s.power_since_earliest = prev_seen if persisted is GridState.GRID else None
             s.low_soc_fired = ()
+            s.high_load_alerted = False
             events.append(BotStartedOnBattery(s.sn, now, False, reading.soc, _load(reading)))
     else:
         if persisted is GridState.BATTERY:
@@ -233,6 +239,7 @@ def _baseline(
             s.power_since = now
             s.power_since_earliest = None
         s.low_soc_fired = ()
+        s.high_load_alerted = False
         events.append(BotStartedOnGrid(s.sn, reading.soc))
     s.power = observed
     s.baseline_pending = False
@@ -277,6 +284,7 @@ def _debounce(
     s.power_since = at
     s.power_since_earliest = earliest
     s.low_soc_fired = ()
+    s.high_load_alerted = False
     _reset_candidate(s)
     return events
 
@@ -308,6 +316,22 @@ def _low_soc(s: DeviceState, reading: Reading, cfg: DetectorConfig) -> list[Even
     s.low_soc_fired = tuple(sorted({*s.low_soc_fired, *crossed}, reverse=True))
     # Several thresholds crossed at once (e.g. bot started at 12 %): one message, the lowest.
     return [LowBattery(s.sn, min(crossed), soc, reading.dsg_minutes)]
+
+
+def _high_load(s: DeviceState, reading: Reading, cfg: DetectorConfig) -> list[Event]:
+    load = _load(reading)
+    if not cfg.high_load_w or s.power is not GridState.BATTERY or load is None:
+        s.high_load_count = 0
+        return []
+    if load < cfg.high_load_w:
+        s.high_load_count = 0
+        return []
+    s.high_load_count += 1
+    # Once per outage: a heater's thermostat switching it on and off must not spam.
+    if s.high_load_alerted or s.high_load_count < cfg.debounce_polls:
+        return []
+    s.high_load_alerted = True
+    return [HighLoad(s.sn, load, reading.soc, reading.dsg_minutes)]
 
 
 def _ac_off(s: DeviceState, reading: Reading, cfg: DetectorConfig, now: datetime) -> list[Event]:
@@ -367,6 +391,7 @@ def evaluate(
 
     if not s.baseline_pending:
         events += _low_soc(s, reading, cfg)
+        events += _high_load(s, reading, cfg)
         events += _full_charge(s, reading, cfg, now)
     events += _ac_off(s, reading, cfg, now)
     return Result(s, events, observed)

@@ -300,7 +300,8 @@ can be added here, except the ones the chart sets itself (`STATE_DIR`, `HTTP_POR
 | `DEBOUNCE_POLLS` | `2` | Consecutive polls before an outage (and an AC-off alert) is reported. |
 | `RESTORE_DEBOUNCE_POLLS` | `2` | Consecutive polls before a restoration is reported. |
 | `OFFLINE_GRACE_SECONDS` | `600` | No data this long → "station offline". |
-| `LOW_SOC_THRESHOLDS` | `30,15` | Low battery alerts (%) while on battery, each once per outage. Empty disables. |
+| `LOW_SOC_THRESHOLDS` | `50,25` | Low battery alerts (%) while on battery, each once per outage. Empty disables. |
+| `HIGH_LOAD_W` | `1000` | On battery, alert when the load stays at or above this many watts (e.g. a heater left on), once per outage; `0` disables. |
 | `ALERT_AC_OFF` | `true` | Alert when the station's AC output is switched off. |
 | `NOTIFY_STARTUP` | `true` | "Bot started …" on startup; `false` = silent unless on battery. |
 | `FULL_CHARGE_SOC` | `100` | "Battery charged" after an outage at this %; `0` disables. |
