@@ -101,7 +101,7 @@ The bot sends "Bot started …" and answers `/status`. Images are published for
 `ghcr.io/yevhenii-rosliakov/bluetti-grid-bot`.
 
 Tokens, the chosen gateway, the last station state and the outage history live in a SQLite
-file in `./data` (mounted at `/data`). Keep that folder: the refresh token rotates and
+file in `./data` (mounted at `/data`), or in PostgreSQL if you set `DATABASE_URL`. Keep that folder: the refresh token rotates and
 the newest one is only stored there. It is git-ignored; its files are owned by UID 10001
 with mode 0600, so on Linux use `make backup` (or `sudo`) to copy it.
 
@@ -262,6 +262,9 @@ the bot at startup with a message naming the variable. See [.env.example](.env.e
 | `BOT_LANGUAGE` | `uk` | `uk` / `en` |
 | `TZ` | `UTC` | time zone for times in messages, e.g. `Europe/Kyiv` |
 | `STATE_DIR` | `/data` | tokens, state, history (SQLite) |
+| `DATABASE_URL` | — | `postgresql://user:password@host:5432/db` to keep the state in PostgreSQL instead of SQLite; the tables are created on start |
+| `DATABASE_USERNAME` | — | overrides the user in `DATABASE_URL` |
+| `DATABASE_PASSWORD` | — | overrides the password in `DATABASE_URL`; no URL-encoding needed |
 | `LOG_LEVEL` | `INFO` | `DEBUG` also logs serial numbers |
 | `LOG_FORMAT` | `text` | `json` for JSON lines |
 | `METRICS_ENABLED` | `false` | Prometheus `/metrics` |
@@ -271,6 +274,7 @@ the bot at startup with a message naming the variable. See [.env.example](.env.e
 
 ```bash
 uv sync                     # or: python -m venv .venv && .venv/bin/pip install .
+                            # PostgreSQL (DATABASE_URL): uv sync --extra postgres / pip install '.[postgres]'
 export STATE_DIR=./data     # or put it into .env (read from the current directory)
 uv run bluetti-grid-bot login
 uv run bluetti-grid-bot check
@@ -296,9 +300,14 @@ helm install bluetti-grid-bot oci://ghcr.io/yevhenii-rosliakov/charts/bluetti-gr
 kubectl -n bluetti exec -it deploy/bluetti-grid-bot -- bluetti-grid-bot login
 ```
 
+See the [chart README](charts/bluetti-grid-bot/README.md) for the full list of values,
+how to mount the PVC or use PostgreSQL, and every setting.
+
 - One replica with `strategy: Recreate` — a single poller with SQLite on a PVC
   (`persistence.size: 100Mi`, `storageClass`, `existingClaim`). With
-  `persistence.enabled=false` an `emptyDir` is used and the rotated token is lost on restart.
+  `persistence.enabled=false` an `emptyDir` is used and the rotated token is lost on restart —
+  unless `DATABASE_URL` (in `secrets` or `existingSecret`) points at PostgreSQL, which makes
+  the PVC unnecessary.
 - `config.*` holds every non-secret variable (ConfigMap); `secrets.*` creates a Secret, or
   point `existingSecret` at your own Secret with the keys `TELEGRAM_BOT_TOKEN` and
   `BLUETTI_REFRESH_TOKEN` (all its keys become env vars).
@@ -365,7 +374,7 @@ spec:
 
 All state lives in one SQLite database in `./data`: the rotating BLUETTI tokens, the cached
 gateway, the per-station detector state and the outage history. To move the bot, copy that
-folder together with `.env`.
+folder together with `.env`. With `DATABASE_URL` only `.env` needs to move.
 
 Run **one instance at a time**. BLUETTI rotates the refresh token on every use, so two copies
 invalidate each other's login, and Telegram allows only one poller per bot token.
@@ -449,8 +458,9 @@ the bot never claims it as one.
 - `detector.py` is a pure state machine (`previous state + sample + config + now → new state +
   events`) and is tested exhaustively. Samples come from a `StateSource` interface; the
   polling implementation can be swapped for BLUETTI's WebSocket push channel later.
-- SQLite via the standard library: tiny local writes, each in its own transaction, WAL mode so
-  `login` can run next to the service.
+- SQLite via the standard library: tiny local writes, each a single atomic statement, WAL
+  mode so `login` can run next to the service. PostgreSQL (`DATABASE_URL`, `psycopg`) runs the
+  same queries; a dropped connection is reopened and the statement retried once.
 
 ## License
 

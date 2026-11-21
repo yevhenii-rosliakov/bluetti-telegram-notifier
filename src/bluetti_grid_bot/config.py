@@ -98,6 +98,11 @@ class Settings(BaseSettings):
     bot_language: Literal["uk", "en"] = "uk"
     tz: str = "UTC"
     state_dir: Path = Path("/data")
+    # postgresql://user:password@host:5432/db; empty = SQLite in STATE_DIR.
+    database_url: SecretStr | None = None
+    # Override the URL's credentials, e.g. to keep them in a separate Secret.
+    database_username: str | None = None
+    database_password: SecretStr | None = None
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
     log_format: Literal["text", "json"] = "text"
     metrics_enabled: bool = False
@@ -183,12 +188,35 @@ class Settings(BaseSettings):
             raise ValueError(f"unknown time zone {value!r} (use e.g. Europe/Kyiv)") from exc
         return name
 
-    @field_validator("bluetti_refresh_token", "bluetti_access_token", "telegram_bot_token")
+    @field_validator("database_url")
+    @classmethod
+    def _database_url(cls, value: SecretStr | None) -> SecretStr | None:
+        url = "" if value is None else value.get_secret_value().strip()
+        if not url:
+            return None
+        if not url.startswith(("postgresql://", "postgres://")):
+            raise ValueError("must be a postgresql:// URL (leave empty for SQLite)")
+        return SecretStr(url)
+
+    @field_validator("database_username")
+    @classmethod
+    def _empty_str(cls, value: str | None) -> str | None:
+        return value.strip() or None if value is not None else None
+
+    @field_validator(
+        "bluetti_refresh_token", "bluetti_access_token", "telegram_bot_token", "database_password"
+    )
     @classmethod
     def _empty_secret(cls, value: SecretStr | None) -> SecretStr | None:
         if value is None or not value.get_secret_value().strip():
             return None
         return SecretStr(value.get_secret_value().strip())
+
+    @model_validator(mode="after")
+    def _database_credentials(self) -> Settings:
+        if self.database_url is None and (self.database_username or self.database_password):
+            raise ValueError("DATABASE_USERNAME / DATABASE_PASSWORD need DATABASE_URL")
+        return self
 
     @model_validator(mode="after")
     def _allowed_default(self) -> Settings:

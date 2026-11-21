@@ -123,3 +123,30 @@ def test_masked_hides_secrets(tmp_path: Path) -> None:
     assert "TEST-TOKEN" not in dumped
     assert "SG9tZUFzc2lzdGFudA" not in dumped
     assert "REALREFRESHTOKEN" not in repr(s)
+
+
+def test_database_url(tmp_path: Path) -> None:
+    assert make_settings(tmp_path).database_url is None
+    assert make_settings(tmp_path, database_url="  ").database_url is None
+    s = make_settings(tmp_path, database_url="postgresql://u:hunter2@db/bot")
+    assert s.database_url is not None
+    assert s.database_url.get_secret_value() == "postgresql://u:hunter2@db/bot"
+    assert "hunter2" not in str(s.masked())
+    with pytest.raises(ValueError, match=r"postgresql://"):
+        make_settings(tmp_path, database_url="mysql://db/bot")
+
+
+def test_database_credentials(tmp_path: Path) -> None:
+    s = make_settings(
+        tmp_path,
+        database_url="postgresql://db/bot",
+        database_username=" bot ",
+        database_password="hunter2",
+    )
+    assert s.database_username == "bot"
+    assert s.database_password is not None
+    assert s.database_password.get_secret_value() == "hunter2"
+    assert "hunter2" not in str(s.masked())
+    assert make_settings(tmp_path, database_password="").database_password is None
+    with pytest.raises(ValueError, match="need DATABASE_URL"):
+        make_settings(tmp_path, database_password="hunter2")

@@ -17,6 +17,9 @@ All notable changes to this project are documented here. The format follows
 - Planned outage schedule from Yasno or outage-data-ua (`SCHEDULE_PROVIDER`, `SCHEDULE_REGION`,
   `SCHEDULE_GROUP`): `/schedule`, a warning before a planned outage, messages when a schedule
   is published or changed, "on the schedule" / "not on the schedule" when the power goes out.
+- PostgreSQL as an alternative to SQLite (`DATABASE_URL`, optionally `DATABASE_USERNAME` /
+  `DATABASE_PASSWORD`; `postgres` extra, included in the Docker image). The Helm chart accepts
+  them as secrets and has its own README.
 
 ## [0.1.0] - 2026-11-20
 

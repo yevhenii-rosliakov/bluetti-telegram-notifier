@@ -14,6 +14,7 @@ services:
       # State (SQLite with the rotating BLUETTI tokens) lives in ./data on the host.
       # The container runs as UID 10001, so the folder must be writable by it: `make data`.
       - ./data:/data
+    # To keep the state in PostgreSQL instead, set DATABASE_URL in .env.
     # Uncomment to reach /healthz, /readyz and /metrics from the host.
     # ports:
     #   - "8080:8080"

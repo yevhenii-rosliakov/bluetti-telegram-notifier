@@ -7,7 +7,6 @@ import contextlib
 import logging
 import secrets
 import signal
-import sqlite3
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -26,7 +25,7 @@ from .messages import Formatter, Translator
 from .monitor import Monitor
 from .notifier import TelegramNotifier, build_dispatcher, set_commands
 from .schedule import ScheduleClient, ScheduleService
-from .storage import Storage
+from .storage import Storage, StorageError
 
 log = logging.getLogger(__name__)
 
@@ -40,6 +39,19 @@ def oauth_client(s: Settings) -> OAuthClient:
     )
 
 
+def open_storage(s: Settings) -> Storage:
+    if s.database_url is not None:
+        return Storage.postgres(
+            s.database_url.get_secret_value(),
+            s.database_username,
+            s.database_password.get_secret_value() if s.database_password else None,
+        )
+    try:
+        return Storage.sqlite(s.db_path)
+    except StorageError as exc:
+        raise StorageError(f"Cannot use STATE_DIR={s.state_dir}: {exc.__cause__}") from exc
+
+
 @dataclass
 class _Cloud:
     session: aiohttp.ClientSession
@@ -51,9 +63,9 @@ class _Cloud:
 @asynccontextmanager
 async def _cloud(s: Settings) -> AsyncIterator[_Cloud]:
     try:
-        storage = Storage(s.db_path)
-    except (OSError, sqlite3.Error) as exc:
-        raise ConfigError(f"Cannot use STATE_DIR={s.state_dir}: {exc}") from exc
+        storage = open_storage(s)
+    except StorageError as exc:
+        raise ConfigError(str(exc)) from exc
     try:
         async with aiohttp.ClientSession() as session:
             tokens = TokenManager(

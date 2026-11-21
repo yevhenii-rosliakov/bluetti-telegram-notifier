@@ -31,6 +31,10 @@ dependencies = [
     "tzdata>=2024.1",
 ]
 
+[project.optional-dependencies]
+# DATABASE_URL (PostgreSQL) instead of SQLite in STATE_DIR.
+postgres = ["psycopg[binary]>=3.2,<4"]
+
 [project.scripts]
 bluetti-grid-bot = "bluetti_grid_bot.__main__:main"
 
@@ -44,6 +48,7 @@ dev = [
     "pytest-asyncio>=0.24",
     "pytest-cov>=6.0",
     "aioresponses>=0.7.7",
+    "psycopg[binary]>=3.2,<4",
     "mypy>=1.13",
     "ruff>=0.8",
 ]

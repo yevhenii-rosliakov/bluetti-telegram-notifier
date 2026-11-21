@@ -10,9 +10,9 @@ from bluetti_grid_bot import app
 from bluetti_grid_bot.__main__ import main
 from bluetti_grid_bot.cloud import BIND_PATH, DEVICES_PATH, STATES_PATH
 from bluetti_grid_bot.config import GATEWAYS
-from bluetti_grid_bot.storage import Storage, TokenSet
+from bluetti_grid_bot.storage import Storage, StorageError, TokenSet
 
-from .conftest import SN, fixture_json, make_settings
+from .conftest import PG_URL, SN, fixture_json, make_settings, needs_pg, reset_pg
 
 EU, GLOBAL = GATEWAYS["eu"], GATEWAYS["global"]
 TOKEN_URL = "https://sso.bluettipower.com/oauth2/token"
@@ -49,7 +49,7 @@ def test_login_flow(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     assert "BLUETTI_REFRESH_TOKEN=REFRESH-1" in out
     assert "BLUETTI_GATEWAY=global" in out
     assert f"BLUETTI_DEVICE_SNS={SN}" in out
-    st = Storage(s.db_path)
+    st = Storage.sqlite(s.db_path)
     tokens = st.get_tokens()
     st.close()
     assert tokens is not None
@@ -78,7 +78,7 @@ def test_login_exchange_rejected(tmp_path: Path, capsys: pytest.CaptureFixture[s
 
 
 def _seed(tmp_path: Path) -> None:
-    st = Storage(tmp_path / "bluetti-grid-bot.sqlite3")
+    st = Storage.sqlite(tmp_path / "bluetti-grid-bot.sqlite3")
     st.save_tokens(TokenSet("ACCESS", "REFRESH", None, 0.0))
     st.close()
 
@@ -213,3 +213,65 @@ async def _instant_wait_for(aw: object, timeout: float | None = None) -> None:  
     if inspect.iscoroutine(aw):
         aw.close()
     raise TimeoutError
+
+
+def test_open_storage_sqlite_error(tmp_path: Path) -> None:
+    (tmp_path / "file").write_text("")
+    with pytest.raises(StorageError, match="Cannot use STATE_DIR"):
+        app.open_storage(make_settings(tmp_path / "file"))
+
+
+def test_open_storage_unreachable_postgres(tmp_path: Path) -> None:
+    s = make_settings(tmp_path, database_url="postgresql://u:p@127.0.0.1:1/x")
+    with pytest.raises(StorageError, match="Cannot connect to DATABASE_URL"):
+        app.open_storage(s)
+
+
+@needs_pg
+def test_open_storage_postgres(tmp_path: Path) -> None:
+    reset_pg()
+    st = app.open_storage(make_settings(tmp_path, database_url=PG_URL))
+    st.save_tokens(TokenSet("a", "r", None, 0.0))
+    st.close()
+    assert not (tmp_path / "bluetti-grid-bot.sqlite3").exists()
+    st = Storage.postgres(PG_URL)
+    assert st.get_tokens() == TokenSet("a", "r", None, 0.0)
+    st.close()
+
+
+@needs_pg
+def test_open_storage_postgres_credentials(tmp_path: Path) -> None:
+    import psycopg
+
+    with psycopg.connect(PG_URL, autocommit=True) as admin:
+        admin.execute("DROP ROLE IF EXISTS bgb_cred_test")
+        admin.execute("CREATE ROLE bgb_cred_test LOGIN SUPERUSER PASSWORD 'p@ss:w/rd#?'")
+    reset_pg()
+    info = psycopg.conninfo.conninfo_to_dict(PG_URL)
+    url = f"postgresql://wrong:wrong@{info['host']}:{info.get('port', 5432)}/{info['dbname']}"
+    s = make_settings(
+        tmp_path,
+        database_url=url,
+        database_username="bgb_cred_test",
+        database_password="p@ss:w/rd#?",
+    )
+    st = app.open_storage(s)
+    st.set("k", "v")
+    assert st.get("k") == "v"
+    st.close()
+
+
+@needs_pg
+def test_postgres_reconnects() -> None:
+    import psycopg
+
+    reset_pg()
+    st = Storage.postgres(PG_URL)
+    st.set("k", "v")
+    with psycopg.connect(PG_URL, autocommit=True) as admin:
+        admin.execute(
+            "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+            "WHERE datname = current_database() AND pid <> pg_backend_pid()"
+        )
+    assert st.get("k") == "v"
+    st.close()
