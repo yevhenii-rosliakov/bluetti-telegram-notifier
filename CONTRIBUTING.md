@@ -23,10 +23,9 @@ helm lint charts/bluetti-grid-bot --strict
 
 ## Releasing
 
-1. On a branch named `release/vX.Y.Z`, bump `version` in `pyproject.toml`,
-   `version`/`appVersion` in `charts/bluetti-grid-bot/Chart.yaml`, and turn `[Unreleased]` in
-   `CHANGELOG.md` into `## [X.Y.Z] - YYYY-MM-DD`.
-2. Open a PR into `main` and merge it. The Release workflow checks that the versions match
-   and the tag is new, builds the multi-arch image and pushes it to GHCR as `X.Y.Z`, `X.Y` and
-   `latest`, pushes the chart, then tags `vX.Y.Z` and creates a GitHub release with the
-   changelog section as notes. Only merged PRs from `release/*` branches trigger it.
+1. Bump `version` in `pyproject.toml`, `version`/`appVersion` in `charts/bluetti-grid-bot/Chart.yaml`,
+   turn `[Unreleased]` in `CHANGELOG.md` into `## [X.Y.Z] - YYYY-MM-DD`, and merge that into `main`.
+2. On GitHub, go to Releases → Draft a new release, create the tag `vX.Y.Z` on `main` and publish.
+   The Release workflow builds the multi-arch image from that tag and pushes it to GHCR as
+   `X.Y.Z`, `X.Y` and `latest` (no `latest` for a pre-release such as `v1.0.0-rc.1`), then
+   pushes the chart.
