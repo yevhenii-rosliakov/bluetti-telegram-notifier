@@ -65,3 +65,9 @@ jobs:
           cache-to: type=gha,mode=max
       - name: Smoke test (read-only root FS)
         run: docker run --rm --read-only bluetti-grid-bot:ci --version
+      - name: Trivy scan (fail on CRITICAL)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: bluetti-grid-bot:ci
+          severity: CRITICAL
+          exit-code: "1"

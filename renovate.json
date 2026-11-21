@@ -1,0 +1,18 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "pre-commit": {
+    "enabled": true
+  },
+  "packageRules": [
+    {
+      "description": "Group every dependency update (Python, Docker, GitHub Actions, pre-commit) into one PR",
+      "matchPackageNames": ["*"],
+      "groupName": "all-dependencies"
+    },
+    {
+      "description": "Our own image and chart are released from this repo, not bumped by Renovate",
+      "matchPackageNames": ["ghcr.io/yevhenii-rosliakov/bluetti-grid-bot"],
+      "enabled": false
+    }
+  ]
+}
