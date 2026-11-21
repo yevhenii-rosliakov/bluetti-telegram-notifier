@@ -1,0 +1,6 @@
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Public BLUETTI client secret (base64 of 'HomeAssistant'), shipped with the official integration"
+regexes = ['''SG9tZUFzc2lzdGFudA==''']
