@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from bluetti_grid_bot.config import GATEWAYS, ConfigError, Settings, load_settings
+from bluetti_grid_bot.config import GATEWAYS, ConfigError, Settings, Site, load_settings
 from bluetti_grid_bot.models import DetectionMode
 
 from .conftest import make_settings
@@ -150,3 +150,76 @@ def test_database_credentials(tmp_path: Path) -> None:
     assert make_settings(tmp_path, database_password="").database_password is None
     with pytest.raises(ValueError, match="need DATABASE_URL"):
         make_settings(tmp_path, database_password="hunter2")
+
+
+# several stations, each with its own login
+
+
+def test_single_account_is_one_site(tmp_path: Path) -> None:
+    s = make_settings(tmp_path, bluetti_refresh_token="R", bluetti_device_sns="SN1")
+    (site,) = s.sites
+    assert site.id == ""
+    assert site.refresh_token is not None
+    assert site.refresh_token.get_secret_value() == "R"
+    assert site.device_sns == ("SN1",)
+    assert site.var("REFRESH_TOKEN") == "BLUETTI_REFRESH_TOKEN"
+
+
+def test_stations_from_environment_and_env_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "BLUETTI_STATIONS=Home,cottage\n"
+        "BLUETTI_HOME_NAME=Дім\n"
+        "BLUETTI_HOME_REFRESH_TOKEN=from-file\n"
+        "BLUETTI_HOME_DEVICE_SNS=SN1, SN2\n"
+        "BLUETTI_COTTAGE_REFRESH_TOKEN=cottage-file\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("BLUETTI_GATEWAY", "eu")
+    monkeypatch.setenv("BLUETTI_COTTAGE_GATEWAY", "us")
+    monkeypatch.setenv("BLUETTI_COTTAGE_REFRESH_TOKEN", "cottage-env")
+    s = load_settings(_env_file=env_file)
+    home, cottage = s.sites
+    assert (home.id, home.name, home.gateway, home.device_sns) == (
+        "home",
+        "Дім",
+        GATEWAYS["eu"],  # BLUETTI_GATEWAY is the default for every station
+        ("SN1", "SN2"),
+    )
+    assert home.refresh_token is not None
+    assert home.refresh_token.get_secret_value() == "from-file"
+    assert (cottage.name, cottage.label, cottage.gateway) == ("", "cottage", GATEWAYS["us"])
+    assert cottage.refresh_token is not None
+    assert cottage.refresh_token.get_secret_value() == "cottage-env"  # environment wins
+    assert cottage.var("DEVICE_SNS") == "BLUETTI_COTTAGE_DEVICE_SNS"
+    assert "from-file" not in repr(s)
+    assert "from-file" not in repr(s.masked())
+    assert s.site("new") == Site("new", gateway=GATEWAYS["eu"])
+
+
+@pytest.mark.parametrize(
+    ("env", "message"),
+    [
+        ({"BLUETTI_STATIONS": "home,home"}, "unique"),
+        ({"BLUETTI_STATIONS": "my_home"}, "letters and digits"),
+        ({"BLUETTI_STATIONS": "home", "BLUETTI_HOME_GATEWAY": "mars"}, "BLUETTI_HOME_GATEWAY"),
+        ({"BLUETTI_STATIONS": "home", "BLUETTI_COTTAGE_NAME": "x"}, "BLUETTI_COTTAGE_"),
+        ({"BLUETTI_STATIONS": "home", "BLUETTI_REFRESH_TOKEN": "x"}, "BLUETTI_REFRESH_TOKEN"),
+        ({"BLUETTI_STATIONS": "home", "BLUETTI_DEVICE_SNS": "SN1"}, "BLUETTI_DEVICE_SNS"),
+    ],
+)
+def test_station_validation_errors(
+    monkeypatch: pytest.MonkeyPatch, env: dict[str, str], message: str
+) -> None:
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+    with pytest.raises(ConfigError, match=message):
+        load_settings(_env_file=None)
+
+
+def test_station_vars_need_stations(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("BLUETTI_HOME_REFRESH_TOKEN", "x")
+    with pytest.raises(ConfigError, match="'home' is not listed in BLUETTI_STATIONS"):
+        load_settings(_env_file=None)

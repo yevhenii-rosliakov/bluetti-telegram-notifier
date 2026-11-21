@@ -45,6 +45,21 @@ config:
   LOG_LEVEL: INFO
   LOG_FORMAT: json
 
+# Several stations with their own BLUETTI logins (e.g. on different accounts), keyed by
+# station id (letters and digits). Rendered into BLUETTI_STATIONS (ids in alphabetical order;
+# set config.BLUETTI_STATIONS to choose the order) and BLUETTI_<ID>_* variables. refreshToken
+# goes into the chart's Secret; with existingSecret put BLUETTI_<ID>_REFRESH_TOKEN there instead.
+# Leave config.BLUETTI_DEVICE_SNS and secrets.BLUETTI_REFRESH_TOKEN empty when using this.
+stations: {}
+#  home:
+#    name: Home
+#    gateway: eu                       # default: config.BLUETTI_GATEWAY
+#    deviceSns: PR200V2XXXXXXXXXXXXXX  # string or list; empty = all stations of the account
+#    refreshToken: ""                  # from `login --station home`; may stay empty
+#  cottage:
+#    name: Cottage
+#    deviceSns: [AC180XXXXXXXXXXXXXXX]
+
 # Secret values. Ignored when existingSecret is set.
 secrets:
   TELEGRAM_BOT_TOKEN: ""
@@ -58,7 +73,8 @@ secrets:
   DATABASE_PASSWORD: ""
 
 # Name of an existing Secret (e.g. created by External Secrets Operator or Vault)
-# with the keys TELEGRAM_BOT_TOKEN and BLUETTI_REFRESH_TOKEN (optionally
+# with the keys TELEGRAM_BOT_TOKEN and BLUETTI_REFRESH_TOKEN, or BLUETTI_<ID>_REFRESH_TOKEN
+# per station with `stations` (optionally
 # BLUETTI_ACCESS_TOKEN, BLUETTI_CLIENT_SECRET, DATABASE_URL, DATABASE_USERNAME,
 # DATABASE_PASSWORD, TELEGRAM_CHAT_IDS). All keys become env vars.
 existingSecret: ""

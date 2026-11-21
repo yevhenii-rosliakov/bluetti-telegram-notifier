@@ -1,0 +1,16 @@
+config:
+  TELEGRAM_CHAT_IDS: "123456789"
+  BLUETTI_GATEWAY: eu
+  TZ: Europe/Kyiv
+secrets:
+  TELEGRAM_BOT_TOKEN: "123456:TEST"
+stations:
+  home:
+    name: Дім
+    deviceSns: PR200V2XXXXXXXXXXXXXX
+    refreshToken: home-token
+  cottage:
+    name: Дача
+    gateway: global
+    deviceSns: [AC180XXXXXXXXXXXXXXX, AC180YYYYYYYYYYYYYYY]
+  garage:

@@ -3,13 +3,20 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import time, timedelta
 from pathlib import Path
 from typing import Annotated, Any, Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import Field, SecretStr, ValidationError, field_validator, model_validator
-from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+from pydantic_settings import (
+    BaseSettings,
+    NoDecode,
+    PydanticBaseSettingsSource,
+    SettingsConfigDict,
+)
 
 from .detector import DetectorConfig
 from .models import DetectionMode
@@ -44,8 +51,63 @@ def _gateway_url(value: str) -> str:
     raise ValueError(f"must be one of {', '.join(GATEWAYS)} or an http(s) URL, got {value!r}")
 
 
+def _gateway_setting(value: str) -> str:
+    if value.strip().lower() in ("", "auto"):
+        return "auto"
+    return _gateway_url(value)
+
+
 CsvStr = Annotated[list[str], NoDecode]
 CsvInt = Annotated[list[int], NoDecode]
+
+# BLUETTI_<ID>_<FIELD>: per-station settings when BLUETTI_STATIONS lists several stations.
+SITE_FIELDS = ("name", "refresh_token", "access_token", "gateway", "device_sns")
+_SITE_VAR = re.compile(r"bluetti_([a-z0-9]+)_(" + "|".join(SITE_FIELDS) + ")")
+
+
+@dataclass(frozen=True, slots=True)
+class Site:
+    """One BLUETTI account login (token + gateway) and the stations polled with it.
+
+    ``id`` is empty for the single-account setup (``BLUETTI_REFRESH_TOKEN`` etc.).
+    """
+
+    id: str
+    name: str = ""
+    refresh_token: SecretStr | None = None
+    access_token: SecretStr | None = None
+    gateway: str = "auto"
+    device_sns: tuple[str, ...] = ()
+
+    def var(self, field: str) -> str:
+        """Environment variable name of a setting of this site."""
+        return f"BLUETTI_{self.id.upper()}_{field}" if self.id else f"BLUETTI_{field}"
+
+    @property
+    def label(self) -> str:
+        return self.name or self.id
+
+
+class _SiteVarsSource(PydanticBaseSettingsSource):
+    """Collect ``BLUETTI_<ID>_<FIELD>`` variables (their names are not known in advance)
+    from the environment and the .env file into ``bluetti_site_vars``."""
+
+    def __init__(
+        self, settings_cls: type[BaseSettings], *sources: Mapping[str, str | None]
+    ) -> None:
+        super().__init__(settings_cls)
+        self._sources = sources
+
+    def get_field_value(self, field: Any, field_name: str) -> tuple[Any, str, bool]:
+        return None, field_name, False  # unused: __call__ is overridden
+
+    def __call__(self) -> dict[str, Any]:
+        found: dict[str, dict[str, str]] = {}
+        for env in self._sources:  # later sources (the process environment) win
+            for key, value in env.items():
+                if value is not None and (m := _SITE_VAR.fullmatch(key.lower())):
+                    found.setdefault(m[1], {})[m[2]] = value
+        return {"bluetti_site_vars": found} if found else {}
 
 
 class Settings(BaseSettings):
@@ -60,6 +122,11 @@ class Settings(BaseSettings):
     bluetti_gateway_probe_order: CsvStr = Field(default_factory=lambda: list(GATEWAYS))
     bluetti_device_sns: CsvStr = Field(default_factory=list)
     bluetti_device_names: Annotated[dict[str, str], NoDecode] = Field(default_factory=dict)
+    # Several stations, each with its own login: ids here, settings in BLUETTI_<ID>_*.
+    bluetti_stations: CsvStr = Field(default_factory=list)
+    bluetti_site_vars: dict[str, dict[str, str]] = Field(
+        default_factory=dict, exclude=True, repr=False
+    )
     bluetti_sso_url: str = "https://sso.bluettipower.com"
     bluetti_client_id: str = "HomeAssistant"
     bluetti_client_secret: SecretStr = SecretStr("SG9tZUFzc2lzdGFudA==")
@@ -108,9 +175,26 @@ class Settings(BaseSettings):
     metrics_enabled: bool = False
     http_port: int = Field(default=8080, ge=0, le=65535)
 
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        site_vars = _SiteVarsSource(
+            settings_cls,
+            getattr(dotenv_settings, "env_vars", {}),
+            getattr(env_settings, "env_vars", {}),
+        )
+        return init_settings, env_settings, dotenv_settings, site_vars, file_secret_settings
+
     @field_validator(
         "bluetti_gateway_probe_order",
         "bluetti_device_sns",
+        "bluetti_stations",
         "telegram_chat_ids",
         "telegram_allowed_chat_ids",
         "low_soc_thresholds",
@@ -136,9 +220,18 @@ class Settings(BaseSettings):
     @field_validator("bluetti_gateway")
     @classmethod
     def _gateway(cls, value: str) -> str:
-        if value.strip().lower() in ("", "auto"):
-            return "auto"
-        return _gateway_url(value)
+        return _gateway_setting(value)
+
+    @field_validator("bluetti_stations")
+    @classmethod
+    def _station_ids(cls, value: list[str]) -> list[str]:
+        ids = [v.lower() for v in value]
+        for sid in ids:
+            if not re.fullmatch(r"[a-z0-9]+", sid):
+                raise ValueError(f"station ids may contain only letters and digits, got {sid!r}")
+        if len(set(ids)) != len(ids):
+            raise ValueError("station ids must be unique")
+        return ids
 
     @field_validator("bluetti_gateway_probe_order")
     @classmethod
@@ -219,6 +312,33 @@ class Settings(BaseSettings):
         return self
 
     @model_validator(mode="after")
+    def _sites_valid(self) -> Settings:
+        unknown = sorted(set(self.bluetti_site_vars) - set(self.bluetti_stations))
+        if unknown:
+            raise ValueError(
+                f"BLUETTI_{unknown[0].upper()}_* is set but {unknown[0]!r} is not listed "
+                "in BLUETTI_STATIONS"
+            )
+        if not self.bluetti_stations:
+            return self
+        single = [
+            name
+            for name, value in (
+                ("BLUETTI_REFRESH_TOKEN", self.bluetti_refresh_token),
+                ("BLUETTI_ACCESS_TOKEN", self.bluetti_access_token),
+                ("BLUETTI_DEVICE_SNS", self.bluetti_device_sns),
+            )
+            if value
+        ]
+        if single:
+            raise ValueError(
+                f"{', '.join(single)} cannot be used with BLUETTI_STATIONS: set "
+                "BLUETTI_<ID>_REFRESH_TOKEN / BLUETTI_<ID>_DEVICE_SNS for each station instead"
+            )
+        self.sites  # noqa: B018 - validates the per-station values
+        return self
+
+    @model_validator(mode="after")
     def _allowed_default(self) -> Settings:
         if self.telegram_allowed_chat_ids is None:
             self.telegram_allowed_chat_ids = list(self.telegram_chat_ids)
@@ -258,6 +378,41 @@ class Settings(BaseSettings):
         return WEEKDAYS.index(day), time(int(hour), int(minute))
 
     @property
+    def sites(self) -> list[Site]:
+        """The logins to poll: one per BLUETTI_STATIONS entry, else the single account."""
+        if not self.bluetti_stations:
+            return [
+                Site(
+                    "",
+                    refresh_token=self.bluetti_refresh_token,
+                    access_token=self.bluetti_access_token,
+                    gateway=self.bluetti_gateway,
+                    device_sns=tuple(self.bluetti_device_sns),
+                )
+            ]
+        return [self.site(sid) for sid in self.bluetti_stations]
+
+    def site(self, sid: str) -> Site:
+        """Settings of station ``sid`` (also one not listed yet, for ``login``)."""
+        sid = sid.lower()
+        if not re.fullmatch(r"[a-z0-9]+", sid):
+            raise ConfigError(f"Station ids may contain only letters and digits, got {sid!r}")
+        values = self.bluetti_site_vars.get(sid, {})
+        site = Site(sid)
+        try:
+            gateway = _gateway_setting(values.get("gateway") or self.bluetti_gateway)
+        except ValueError as exc:
+            raise ValueError(f"{site.var('GATEWAY')}: {exc}") from None
+        return Site(
+            sid,
+            name=values.get("name", "").strip(),
+            refresh_token=_secret(values.get("refresh_token")),
+            access_token=_secret(values.get("access_token")),
+            gateway=gateway,
+            device_sns=tuple(_split(values.get("device_sns", ""))),
+        )
+
+    @property
     def db_path(self) -> Path:
         return self.state_dir / "bluetti-grid-bot.sqlite3"
 
@@ -286,10 +441,21 @@ class Settings(BaseSettings):
 
     def masked(self) -> dict[str, Any]:
         """Settings for debug logs; secrets are shown as ``**********``."""
-        return {
+        values = {
             k: ("**********" if isinstance(v, SecretStr) else v)
             for k, v in self.model_dump(mode="python").items()
         }
+        if self.bluetti_stations:
+            values["sites"] = [
+                {"id": st.id, "name": st.name, "gateway": st.gateway, "sns": st.device_sns}
+                for st in self.sites
+            ]
+        return values
+
+
+def _secret(value: str | None) -> SecretStr | None:
+    value = (value or "").strip()
+    return SecretStr(value) if value else None
 
 
 def load_settings(**overrides: Any) -> Settings:

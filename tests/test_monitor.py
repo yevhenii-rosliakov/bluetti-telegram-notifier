@@ -30,6 +30,7 @@ class FakeSource:
         self.stations = [Station(SN, "PR200V2", "Home")]
         self.queue: list[dict[str, Sample | None] | Exception] = []
         self.start_error: Exception | None = None
+        self.errors: dict[str, Exception] = {}
 
     async def start(self) -> list[Station]:
         if self.start_error is not None:
@@ -425,3 +426,33 @@ def test_parse_stats_days() -> None:
     assert parse_stats_days(None) == 30
     assert parse_stats_days(CommandObject(command="stats", args="7")) == 7
     assert parse_stats_days(CommandObject(command="stats", args="9999")) == 365
+
+
+async def test_expired_login_of_one_station_does_not_stop_the_other(
+    tmp_path: Path, storage: Storage
+) -> None:
+    m, src, sender, clock = make_monitor(
+        tmp_path,
+        storage,
+        bluetti_stations="home,cottage",
+        bluetti_site_vars={"home": {"name": "Home"}, "cottage": {"name": "Cottage"}},
+    )
+    await m.start()
+    src.errors = {"cottage": AuthExpiredError("invalid_grant")}
+    assert await poll(m, src, clock, {SN: make_sample()}) == 60
+    assert await poll(m, src, clock, {SN: make_sample()}) == 60
+    assert sender.sent[1].startswith("🤖 Bot started: grid power is present")
+    assert sender.sent[0::2] == [
+        "🔑 The BLUETTI login of Cottage has expired. Run `bluetti-grid-bot login --station "
+        "cottage` again and update BLUETTI_COTTAGE_REFRESH_TOKEN. The bot keeps retrying."
+    ]
+    assert "login of Cottage is invalid — run `login --station cottage`" in m.status_text()
+    assert m.auth_expired
+    # The cottage signs in again and its station is added.
+    src.errors = {}
+    src.stations = [*src.stations, Station("COTTAGE0001", "AC180", "Cottage")]
+    await poll(m, src, clock, {SN: make_sample(), "COTTAGE0001": make_sample(sn="COTTAGE0001")})
+    assert sender.sent[2] == "🔑 The BLUETTI login of Cottage works again."
+    assert not m.auth_expired
+    assert [st.sn for st in m.stations] == [SN, "COTTAGE0001"]
+    assert "Cottage" in m.status_text()

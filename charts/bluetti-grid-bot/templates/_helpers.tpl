@@ -42,3 +42,17 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- define "bgb.serviceEnabled" -}}
 {{- if or .Values.service.enabled .Values.metrics.serviceMonitor.enabled }}true{{ end }}
 {{- end }}
+
+{{/* Checks .Values.stations; renders nothing. */}}
+{{- define "bgb.validateStations" -}}
+{{- if .Values.stations }}
+{{- range $id, $_ := .Values.stations }}
+{{- if not (regexMatch "^[a-zA-Z0-9]+$" $id) }}
+{{- fail (printf "stations: id %q may contain only letters and digits" $id) }}
+{{- end }}
+{{- end }}
+{{- if or .Values.config.BLUETTI_DEVICE_SNS (and (not .Values.existingSecret) .Values.secrets.BLUETTI_REFRESH_TOKEN) }}
+{{- fail "stations: set deviceSns / refreshToken per station and leave config.BLUETTI_DEVICE_SNS and secrets.BLUETTI_REFRESH_TOKEN empty" }}
+{{- end }}
+{{- end }}
+{{- end }}

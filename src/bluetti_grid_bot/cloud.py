@@ -6,14 +6,14 @@ import asyncio
 import json
 import logging
 import time
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
 
 import aiohttp
 
-from .auth import TokenManager
-from .config import GATEWAYS, Settings
+from .auth import AuthError, AuthExpiredError, TokenManager
+from .config import GATEWAYS, Site
 from .models import Sample, Station
 from .storage import Storage
 
@@ -77,6 +77,7 @@ class BluettiCloud:
         *,
         gateway: str = "auto",
         probe_order: Sequence[str] = tuple(GATEWAYS.values()),
+        site: str = "",
         retries: int = 3,
         backoff_s: float = 1.0,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
@@ -86,20 +87,22 @@ class BluettiCloud:
         self._storage = storage
         self._gateway_setting = gateway
         self._probe_order = list(probe_order)
+        self._site = site
         self._retries = retries
         self._backoff = backoff_s
         self._sleep = sleep
 
     @classmethod
-    def from_settings(
-        cls, session: aiohttp.ClientSession, tokens: TokenManager, storage: Storage, s: Settings
+    def for_site(
+        cls,
+        session: aiohttp.ClientSession,
+        tokens: TokenManager,
+        storage: Storage,
+        site: Site,
+        probe_order: Sequence[str],
     ) -> BluettiCloud:
         return cls(
-            session,
-            tokens,
-            storage,
-            gateway=s.bluetti_gateway,
-            probe_order=s.bluetti_gateway_probe_order,
+            session, tokens, storage, gateway=site.gateway, probe_order=probe_order, site=site.id
         )
 
     # gateway
@@ -107,7 +110,7 @@ class BluettiCloud:
     async def gateway(self) -> str:
         if self._gateway_setting != "auto":
             return self._gateway_setting
-        if cached := self._storage.get_gateway():
+        if cached := self._storage.get_gateway(self._site):
             return cached
         return await self.probe_gateway()
 
@@ -122,14 +125,14 @@ class BluettiCloud:
                 failures.append(f"{gateway_name(url)}: {exc}")
                 continue
             log.info("Using BLUETTI gateway %s (%s)", gateway_name(url), url)
-            self._storage.set_gateway(url)
+            self._storage.set_gateway(url, self._site)
             return url
         raise CloudError("No BLUETTI gateway accepted the token (" + "; ".join(failures) + ")")
 
     def _forget_gateway(self) -> None:
-        if self._gateway_setting == "auto" and self._storage.get_gateway():
+        if self._gateway_setting == "auto" and self._storage.get_gateway(self._site):
             log.warning("Forgetting the cached gateway; it will be probed again")
-            self._storage.set_gateway(None)
+            self._storage.set_gateway(None, self._site)
 
     # calls
 
@@ -244,6 +247,15 @@ class StateSource(Protocol):
     """Where samples come from. Polling today; a WebSocket push source can implement
     the same interface later."""
 
+    @property
+    def stations(self) -> list[Station]: ...
+
+    @property
+    def errors(self) -> Mapping[str, Exception]:
+        """Site id -> error of the last ``start``/``fetch``, for sites that failed while
+        others worked. When every site fails, the call raises instead."""
+        ...
+
     async def start(self) -> list[Station]: ...
 
     async def fetch(self) -> dict[str, Sample | None]: ...
@@ -256,12 +268,14 @@ class PollingStateSource:
         *,
         sns: Sequence[str] = (),
         names: dict[str, str] | None = None,
+        site_name: str = "",
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
         self._cloud = cloud
         self._wanted = list(sns)
         self._names = names or {}
+        self._site_name = site_name
         self._clock = clock
         self._sleep = sleep
         self._stations: list[Station] = []
@@ -271,6 +285,10 @@ class PollingStateSource:
     @property
     def stations(self) -> list[Station]:
         return list(self._stations)
+
+    @property
+    def errors(self) -> Mapping[str, Exception]:
+        return {}
 
     async def start(self) -> list[Station]:
         devices = {d.sn: d for d in await self._cloud.list_devices()}
@@ -290,14 +308,16 @@ class PollingStateSource:
             sns = [sn for sn, d in devices.items() if d.cloud]
             if not sns:
                 raise CloudError("No cloud-capable (Wi-Fi) stations on this BLUETTI account")
-        self._stations = [self._station(sn, devices.get(sn)) for sn in sns]
+        self._stations = [self._station(sn, devices.get(sn), len(sns)) for sn in sns]
         await self._bind()
         return self.stations
 
-    def _station(self, sn: str, info: DeviceInfo | None) -> Station:
+    def _station(self, sn: str, info: DeviceInfo | None, count: int) -> Station:
         model = info.model if info else ""
         if sn in self._names:
             name = self._names[sn]
+        elif self._site_name:
+            name = self._site_name if count == 1 else f"{self._site_name} …{sn[-4:]}"
         elif info and info.name and info.name != sn:
             name = info.name
         else:
@@ -327,3 +347,58 @@ class PollingStateSource:
             else:
                 by_sn.update({s.sn: s for s in await self._cloud.device_states(sns)})
         return {sn: by_sn.get(sn) for sn in sns}
+
+
+class MultiStateSource:
+    """Stations of several sites (BLUETTI logins) polled together.
+
+    A site that fails (expired login, its gateway down) does not stop the others: its
+    stations get no sample and the error is kept in ``errors``. Only when every site fails
+    is the error raised, an expired login first. A site that could not start is started
+    again on the next ``fetch``; its stations then appear in ``stations``.
+    """
+
+    def __init__(self, sources: Mapping[str, PollingStateSource]) -> None:
+        self._sources = dict(sources)
+        self._errors: dict[str, Exception] = {}
+
+    @property
+    def stations(self) -> list[Station]:
+        return [st for src in self._sources.values() for st in src.stations]
+
+    @property
+    def errors(self) -> Mapping[str, Exception]:
+        return dict(self._errors)
+
+    async def start(self) -> list[Station]:
+        await self._each(lambda src: src.start())
+        return self.stations
+
+    async def fetch(self) -> dict[str, Sample | None]:
+        results = await self._each(lambda src: src.fetch())
+        samples: dict[str, Sample | None] = {st.sn: None for st in self.stations}
+        for result in results.values():
+            samples.update(result)
+        return samples
+
+    async def _each(self, call: Callable[[PollingStateSource], Awaitable[Any]]) -> dict[str, Any]:
+        ids = list(self._sources)
+        answers = await asyncio.gather(
+            *(call(self._sources[i]) for i in ids), return_exceptions=True
+        )
+        results: dict[str, Any] = {}
+        errors: dict[str, Exception] = {}
+        for site, answer in zip(ids, answers, strict=True):
+            if isinstance(answer, CloudError | AuthError):
+                errors[site] = answer
+            elif isinstance(answer, BaseException):
+                raise answer
+            else:
+                results[site] = answer
+        self._errors = errors
+        if errors and not results:
+            first = list(errors.values())
+            raise next((e for e in first if isinstance(e, AuthExpiredError)), first[0])
+        for site, exc in errors.items():
+            log.warning("Station %s: %s", site, exc)
+        return results

@@ -20,7 +20,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--version", action="version", version=__version__)
     sub = parser.add_subparsers(dest="command")
     sub.add_parser("run", help="run the service (default)")
-    sub.add_parser("login", help="sign in to BLUETTI interactively and store the tokens")
+    login = sub.add_parser("login", help="sign in to BLUETTI interactively and store the tokens")
+    login.add_argument(
+        "--station",
+        metavar="ID",
+        help="station id from BLUETTI_STATIONS to sign in for (when monitoring several)",
+    )
     sub.add_parser("check", help="poll once and show what the detector decides")
     args = parser.parse_args(argv)
     command = args.command or "run"
@@ -33,7 +38,7 @@ def main(argv: list[str] | None = None) -> int:
         from . import app  # noqa: PLC0415 - keep `--help` fast
 
         if command == "login":
-            return app.login(settings)
+            return app.login(settings, args.station)
         if command == "check":
             return asyncio.run(app.check(settings))
         return asyncio.run(app.run_service(settings))

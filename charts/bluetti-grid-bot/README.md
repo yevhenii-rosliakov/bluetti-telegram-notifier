@@ -17,7 +17,8 @@ The chart is published to GHCR as an OCI artifact:
 4. [Application settings (`config.*`)](#application-settings-config)
 5. [Chart values](#chart-values)
 6. [Metrics](#metrics)
-7. [Operations](#operations)
+7. [Several stations](#several-stations)
+8. [Operations](#operations)
 
 ## Quick start
 
@@ -227,6 +228,7 @@ an environment variable**.
 | `TELEGRAM_BOT_TOKEN` | **yes** | Bot token from [@BotFather](https://t.me/BotFather). |
 | `BLUETTI_REFRESH_TOKEN` | no | Printed by `login`. Only *seeds* an empty state; the rotated token in the state wins. Changing the value replaces the stored token on the next restart (useful after a `login` on another machine). Can stay empty if you run `login` in the pod. |
 | `BLUETTI_ACCESS_TOKEN` | no | Debugging only. |
+| `BLUETTI_<ID>_REFRESH_TOKEN` | no | Per station with several stations, instead of `BLUETTI_REFRESH_TOKEN` (`stations.<id>.refreshToken` puts it into the chart's Secret). See [Several stations](#several-stations). |
 | `BLUETTI_CLIENT_SECRET` | no | OAuth client secret; the default (Home Assistant integration's public client) is correct. |
 | `DATABASE_URL` | no | PostgreSQL URL, see [Option B](#option-b-postgresql). Empty = SQLite on the PVC. May go into `config` instead when it holds no password. |
 | `DATABASE_USERNAME` | no | Overrides the user in `DATABASE_URL`. Requires `DATABASE_URL`. |
@@ -281,6 +283,7 @@ can be added here, except the ones the chart sets itself (`STATE_DIR`, `HTTP_POR
 | `BLUETTI_GATEWAY_PROBE_ORDER` | `eu,global,us` | Order in which `auto` probes gateways. |
 | `BLUETTI_DEVICE_SNS` | all | Serial numbers to monitor, comma-separated. Empty = all cloud-capable stations of the account. |
 | `BLUETTI_DEVICE_NAMES` | — | Display names: `SN1=Mom's flat,SN2=Garage`; shown when several stations are monitored. |
+| `BLUETTI_STATIONS` | ids of `stations` | Several stations with their own logins. Usually generated from the `stations` map, see [Several stations](#several-stations). |
 | `BLUETTI_SSO_URL` | `https://sso.bluettipower.com` | Change only if you know why. |
 | `BLUETTI_CLIENT_ID` | `HomeAssistant` | OAuth client of the Home Assistant integration. |
 | `BLUETTI_REDIRECT_URI` | `https://my.home-assistant.io/redirect/oauth` | Registered for that client; compared verbatim. |
@@ -370,10 +373,55 @@ metrics:
       release: prometheus
 ```
 
+## Several stations
+
+To monitor stations on different BLUETTI accounts (e.g. home and cottage), describe them in
+the `stations` map, keyed by station id (letters and digits):
+
+```yaml
+stations:
+  home:
+    name: Дім
+    gateway: eu                       # default: config.BLUETTI_GATEWAY
+    deviceSns: PR200V2XXXXXXXXXXXXXX  # string or list; empty = all stations of the account
+    refreshToken: ""                  # may stay empty until `login --station home`
+  cottage:
+    name: Дача
+    deviceSns: [AC180XXXXXXXXXXXXXXX]
+    refreshToken: ""
+```
+
+| Key | Becomes | Where |
+|---|---|---|
+| map keys | `BLUETTI_STATIONS=cottage,home` (alphabetical; set `config.BLUETTI_STATIONS` to choose the order) | ConfigMap |
+| `name` | `BLUETTI_<ID>_NAME` | ConfigMap |
+| `gateway` | `BLUETTI_<ID>_GATEWAY` | ConfigMap |
+| `deviceSns` | `BLUETTI_<ID>_DEVICE_SNS` | ConfigMap |
+| `refreshToken` | `BLUETTI_<ID>_REFRESH_TOKEN` | the chart's Secret |
+
+- Leave `config.BLUETTI_DEVICE_SNS` and `secrets.BLUETTI_REFRESH_TOKEN` empty; the chart
+  refuses to render otherwise.
+- With `existingSecret`, keep `refreshToken` out of the map and put
+  `BLUETTI_HOME_REFRESH_TOKEN`, `BLUETTI_COTTAGE_REFRESH_TOKEN` into your Secret instead.
+- Without the map, the same variables can be set by hand in `config` / `secrets`.
+
+Then sign in once per station, each time with the account that owns it (use a private
+browser window for each, so the second login does not reuse the first account):
+
+```bash
+kubectl -n bluetti exec -it deploy/bluetti-grid-bot -- bluetti-grid-bot login --station home
+kubectl -n bluetti exec -it deploy/bluetti-grid-bot -- bluetti-grid-bot login --station cottage
+```
+
+`login --station <id>` prints that station's `BLUETTI_<ID>_*` lines; the tokens are stored in
+the state per station. See the
+[main README](https://github.com/yevhenii-rosliakov/bluetti-telegram-notifier#several-stations-in-different-places)
+for details.
+
 ## Operations
 
 ```bash
-# Sign in again (e.g. after "BLUETTI login expired")
+# Sign in again (e.g. after "BLUETTI login expired"); add --station <id> with several stations
 kubectl -n bluetti exec -it deploy/bluetti-grid-bot -- bluetti-grid-bot login
 
 # See what the bot sees and decides for one poll

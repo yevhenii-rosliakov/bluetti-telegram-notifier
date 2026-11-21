@@ -218,6 +218,11 @@ class Outage:
         return self.start_earliest is not None or self.end_earliest is not None
 
 
+def scoped(key: str, site: str) -> str:
+    """Key-value key of a per-site setting; the single-account keys have no suffix."""
+    return f"{key}:{site}" if site else key
+
+
 def _ts(value: datetime | None) -> str | None:
     return None if value is None else value.isoformat()
 
@@ -264,18 +269,20 @@ class Storage:
                 (key, value),
             )
 
-    def get_tokens(self) -> TokenSet | None:
-        text = self.get("tokens")
+    # Tokens and gateway are kept per site (BLUETTI_STATIONS entry); "" = single account.
+
+    def get_tokens(self, site: str = "") -> TokenSet | None:
+        text = self.get(scoped("tokens", site))
         return None if text is None else TokenSet.from_json(text)
 
-    def save_tokens(self, tokens: TokenSet) -> None:
-        self.set("tokens", tokens.to_json())
+    def save_tokens(self, tokens: TokenSet, site: str = "") -> None:
+        self.set(scoped("tokens", site), tokens.to_json())
 
-    def get_gateway(self) -> str | None:
-        return self.get("gateway")
+    def get_gateway(self, site: str = "") -> str | None:
+        return self.get(scoped("gateway", site))
 
-    def set_gateway(self, url: str | None) -> None:
-        self.set("gateway", url)
+    def set_gateway(self, url: str | None, site: str = "") -> None:
+        self.set(scoped("gateway", site), url)
 
     # device state
 

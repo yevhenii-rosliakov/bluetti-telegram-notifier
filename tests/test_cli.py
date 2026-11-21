@@ -9,7 +9,7 @@ from aioresponses import aioresponses
 from bluetti_grid_bot import app
 from bluetti_grid_bot.__main__ import main
 from bluetti_grid_bot.cloud import BIND_PATH, DEVICES_PATH, STATES_PATH
-from bluetti_grid_bot.config import GATEWAYS
+from bluetti_grid_bot.config import GATEWAYS, ConfigError
 from bluetti_grid_bot.storage import Storage, StorageError, TokenSet
 
 from .conftest import PG_URL, SN, fixture_json, make_settings, needs_pg, reset_pg
@@ -54,6 +54,33 @@ def test_login_flow(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     st.close()
     assert tokens is not None
     assert tokens.refresh_token == "REFRESH-1"
+
+
+def test_login_for_one_of_several_stations(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    s = make_settings(
+        tmp_path, bluetti_stations="home", bluetti_site_vars={"home": {"gateway": "eu"}}
+    )
+    with pytest.raises(ConfigError, match="--station"):
+        app.login(s, read_line=lambda _: "")
+    with aioresponses() as m:
+        m.post(TOKEN_URL, payload={"access_token": "A", "refresh_token": "COTTAGE-R"})
+        m.get(EU + DEVICES_PATH, payload=fixture_json("devices.sample.json"), repeat=True)
+        assert app.login(s, "Cottage", read_line=lambda _: "?code=c") == 0
+    out = capsys.readouterr().out
+    assert "BLUETTI login for station 'cottage'" in out
+    assert "BLUETTI_STATIONS=home,cottage" in out
+    assert "BLUETTI_COTTAGE_NAME=" in out
+    assert "BLUETTI_COTTAGE_REFRESH_TOKEN=COTTAGE-R" in out
+    assert "BLUETTI_COTTAGE_GATEWAY=eu" in out
+    assert f"BLUETTI_COTTAGE_DEVICE_SNS={SN}" in out
+    st = Storage.sqlite(s.db_path)
+    tokens, legacy = st.get_tokens("cottage"), st.get_tokens()
+    st.close()
+    assert tokens is not None
+    assert tokens.refresh_token == "COTTAGE-R"
+    assert legacy is None
 
 
 def test_login_without_code(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

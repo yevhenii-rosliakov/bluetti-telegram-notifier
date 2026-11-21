@@ -14,6 +14,7 @@ from importlib import resources
 from zoneinfo import ZoneInfo
 
 from . import stats
+from .config import Site
 from .detector import DeviceState
 from .events import (
     AcOutputOff,
@@ -201,6 +202,20 @@ class Formatter:
             case OutageEndedUnobserved():
                 return None
 
+    # login
+
+    def auth_expired(self, site: Site) -> str:
+        if not site.id:
+            return self.t("auth_expired")
+        return self.t(
+            "auth_expired_station", name=site.label, site=site.id, var=site.var("REFRESH_TOKEN")
+        )
+
+    def auth_restored(self, site: Site) -> str:
+        if not site.id:
+            return self.t("auth_restored")
+        return self.t("auth_restored_station", name=site.label)
+
     # /status
 
     def status(
@@ -210,11 +225,16 @@ class Formatter:
         auth_expired: bool,
         stats_days: int = 7,
         schedule: Schedule | None = None,
+        expired_sites: Sequence[Site] = (),
     ) -> str:
+        """``auth_expired``: the single-account login; ``expired_sites``: BLUETTI_STATIONS
+        entries whose login is invalid."""
         t = self.t
         blocks = []
         if auth_expired:
             blocks.append(t("status_auth_expired"))
+        for site in expired_sites:
+            blocks.append(t("status_auth_expired_station", name=site.label, site=site.id))
         if schedule is not None:
             blocks.append(self._schedule_status(schedule, now))
         if not views:

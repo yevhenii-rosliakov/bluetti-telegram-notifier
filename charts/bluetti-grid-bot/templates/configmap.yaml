@@ -10,6 +10,27 @@ data:
   {{ $key }}: {{ $value | toString | quote }}
   {{- end }}
   {{- end }}
+  {{- include "bgb.validateStations" . }}
+  {{- if and .Values.stations (not .Values.config.BLUETTI_STATIONS) }}
+  BLUETTI_STATIONS: {{ keys .Values.stations | sortAlpha | join "," | quote }}
+  {{- end }}
+  {{- range $id, $st := .Values.stations }}
+  {{- $st = $st | default dict }}
+  {{- $prefix := printf "BLUETTI_%s_" (upper $id) }}
+  {{- with $st.name }}
+  {{ $prefix }}NAME: {{ . | toString | quote }}
+  {{- end }}
+  {{- with $st.gateway }}
+  {{ $prefix }}GATEWAY: {{ . | toString | quote }}
+  {{- end }}
+  {{- with $st.deviceSns }}
+  {{- if kindIs "slice" . }}
+  {{ $prefix }}DEVICE_SNS: {{ join "," . | quote }}
+  {{- else }}
+  {{ $prefix }}DEVICE_SNS: {{ . | toString | quote }}
+  {{- end }}
+  {{- end }}
+  {{- end }}
   STATE_DIR: /data
   HTTP_PORT: {{ .Values.httpPort | toString | quote }}
   METRICS_ENABLED: {{ .Values.metrics.enabled | toString | quote }}
