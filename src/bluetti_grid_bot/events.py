@@ -15,6 +15,7 @@ class GridLost:
     earliest: datetime | None
     soc: float | None
     load_w: float | None
+    runtime_min: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,6 +74,17 @@ class LowBattery:
 
 
 @dataclass(frozen=True, slots=True)
+class BatteryFull:
+    """The battery reached the configured level after grid power came back."""
+
+    sn: str
+    soc: float
+    # When the grid came back; charging took ``at - charging_since``.
+    charging_since: datetime
+    at: datetime
+
+
+@dataclass(frozen=True, slots=True)
 class AcOutputOff:
     sn: str
     at: datetime
@@ -99,6 +111,7 @@ Event = (
     | BotStartedOnGrid
     | OutageEndedUnobserved
     | LowBattery
+    | BatteryFull
     | AcOutputOff
     | StationOffline
     | StationOnline

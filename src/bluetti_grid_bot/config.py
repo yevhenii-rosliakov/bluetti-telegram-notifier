@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import timedelta
+import re
+from datetime import time, timedelta
 from pathlib import Path
 from typing import Annotated, Any, Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -12,12 +13,16 @@ from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 from .detector import DetectorConfig
 from .models import DetectionMode
+from .schedule import PROVIDERS
 
 GATEWAYS: dict[str, str] = {
     "eu": "https://gwde.bluettipower.com",
     "global": "https://gw.bluettipower.com",
     "us": "https://gwpry.bluettipower.com",
 }
+
+
+WEEKDAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 
 
 class ConfigError(Exception):
@@ -77,6 +82,17 @@ class Settings(BaseSettings):
     low_soc_thresholds: CsvInt = Field(default_factory=lambda: [30, 15])
     alert_ac_off: bool = True
     notify_startup: bool = True
+    full_charge_soc: int = Field(default=100, ge=0, le=100)
+
+    # Reports
+    # "<weekday> HH:MM" in TZ, e.g. "mon 09:00"; "off" disables.
+    weekly_summary: str = "mon 09:00"
+
+    # Planned outage schedule
+    schedule_provider: Literal["off", "yasno", "outage-data-ua"] = "off"
+    schedule_region: str = ""
+    schedule_group: str = ""
+    schedule_warn_minutes: int = Field(default=30, ge=0, le=720)
 
     # Presentation / runtime
     bot_language: Literal["uk", "en"] = "uk"
@@ -141,6 +157,22 @@ class Settings(BaseSettings):
             raise ValueError("thresholds must be between 1 and 99")
         return sorted(set(value), reverse=True)
 
+    @field_validator("weekly_summary")
+    @classmethod
+    def _weekly(cls, value: str) -> str:
+        text = " ".join(value.lower().split())
+        if text in ("", "off", "false", "no"):
+            return "off"
+        m = re.fullmatch(r"([a-z]{3})\w* (\d{1,2}):(\d{2})", text)
+        if m is None or m[1] not in WEEKDAYS or int(m[2]) > 23 or int(m[3]) > 59:
+            raise ValueError(f"expected e.g. 'mon 09:00' or 'off', got {value!r}")
+        return f"{m[1]} {int(m[2]):02d}:{m[3]}"
+
+    @field_validator("schedule_region", "schedule_group")
+    @classmethod
+    def _strip(cls, value: str) -> str:
+        return value.strip().lower()
+
     @field_validator("tz")
     @classmethod
     def _tz(cls, value: str) -> str:
@@ -164,6 +196,20 @@ class Settings(BaseSettings):
             self.telegram_allowed_chat_ids = list(self.telegram_chat_ids)
         return self
 
+    @model_validator(mode="after")
+    def _schedule(self) -> Settings:
+        if self.schedule_provider == "off":
+            return self
+        regions = PROVIDERS[self.schedule_provider]
+        if self.schedule_region not in regions:
+            raise ValueError(
+                f"SCHEDULE_REGION must be one of {', '.join(regions)} "
+                f"for SCHEDULE_PROVIDER={self.schedule_provider}"
+            )
+        if not re.fullmatch(r"\d{1,2}(\.\d)?", self.schedule_group):
+            raise ValueError("SCHEDULE_GROUP must be your queue, e.g. 3.1")
+        return self
+
     # Derived values
 
     @property
@@ -173,6 +219,15 @@ class Settings(BaseSettings):
     @property
     def allowed_chat_ids(self) -> frozenset[int]:
         return frozenset(self.telegram_allowed_chat_ids or ())
+
+    @property
+    def weekly_summary_at(self) -> tuple[int, time] | None:
+        """(weekday, local time), Monday = 0; None when disabled."""
+        if self.weekly_summary == "off":
+            return None
+        day, hhmm = self.weekly_summary.split()
+        hour, minute = hhmm.split(":")
+        return WEEKDAYS.index(day), time(int(hour), int(minute))
 
     @property
     def db_path(self) -> Path:
@@ -189,6 +244,7 @@ class Settings(BaseSettings):
             offline_grace=timedelta(seconds=self.offline_grace_seconds),
             low_soc_thresholds=tuple(self.low_soc_thresholds),
             alert_ac_off=self.alert_ac_off,
+            full_charge_soc=self.full_charge_soc,
         )
 
     def require_telegram(self) -> None:

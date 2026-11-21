@@ -25,6 +25,7 @@ from .health import HealthServer, Metrics
 from .messages import Formatter, Translator
 from .monitor import Monitor
 from .notifier import TelegramNotifier, build_dispatcher, set_commands
+from .schedule import ScheduleClient, ScheduleService
 from .storage import Storage
 
 log = logging.getLogger(__name__)
@@ -41,6 +42,7 @@ def oauth_client(s: Settings) -> OAuthClient:
 
 @dataclass
 class _Cloud:
+    session: aiohttp.ClientSession
     storage: Storage
     tokens: TokenManager
     cloud: BluettiCloud
@@ -65,7 +67,9 @@ async def _cloud(s: Settings) -> AsyncIterator[_Cloud]:
                     s.bluetti_access_token.get_secret_value() if s.bluetti_access_token else None
                 ),
             )
-            yield _Cloud(storage, tokens, BluettiCloud.from_settings(session, tokens, storage, s))
+            yield _Cloud(
+                session, storage, tokens, BluettiCloud.from_settings(session, tokens, storage, s)
+            )
     finally:
         storage.close()
 
@@ -105,7 +109,13 @@ async def run_service(s: Settings) -> int:
         source = PollingStateSource(c.cloud, sns=s.bluetti_device_sns, names=s.bluetti_device_names)
         bot = Bot(token=s.telegram_bot_token.get_secret_value())
         notifier = TelegramNotifier(bot, s.telegram_chat_ids, metrics)
-        monitor = Monitor(s, c.storage, source, notifier, formatter, metrics)
+        schedule = None
+        if s.schedule_provider != "off":
+            client = ScheduleClient(
+                c.session, s.schedule_provider, s.schedule_region, s.schedule_group
+            )
+            schedule = ScheduleService(client, c.storage)
+        monitor = Monitor(s, c.storage, source, notifier, formatter, metrics, schedule=schedule)
         dp = build_dispatcher(monitor, s.allowed_chat_ids)
         health = HealthServer(
             s.http_port,
@@ -125,6 +135,10 @@ async def run_service(s: Settings) -> int:
         monitor_task = asyncio.create_task(monitor.run(stop), name="monitor")
         polling_task = asyncio.create_task(_telegram_polling(dp, bot, stop), name="telegram")
         stop_task = asyncio.create_task(stop.wait(), name="stop")
+        # The schedule is optional: if its loop dies the bot keeps working without it.
+        schedule_task = (
+            asyncio.create_task(schedule.run(stop), name="schedule") if schedule else None
+        )
         exit_code = 0
         try:
             done, _ = await asyncio.wait(
@@ -139,10 +153,13 @@ async def run_service(s: Settings) -> int:
             stop.set()
             with contextlib.suppress(RuntimeError):
                 await dp.stop_polling()
-            for task in (monitor_task, polling_task, stop_task):
+            tasks = [monitor_task, polling_task, stop_task]
+            if schedule_task is not None:
+                tasks.append(schedule_task)
+            for task in tasks:
                 if not task.done():
                     task.cancel()
-            await asyncio.gather(monitor_task, polling_task, stop_task, return_exceptions=True)
+            await asyncio.gather(*tasks, return_exceptions=True)
             await health.stop()
             await bot.session.close()
             for sig in (signal.SIGTERM, signal.SIGINT):
