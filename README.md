@@ -7,7 +7,8 @@ power station as the sensor. It polls the station through the BLUETTI cloud and 
 
 - ⚡ **Power went out** — `Power went out at 14:32` (+ battery %, load)
 - ✅ **Power is back** — `Power is back at 16:05, it was out for 1 h 33 min` (+ battery %)
-- 🔋 **Low battery** while on battery — configurable thresholds (default 30 % and 15 %), each once per outage
+- 🔋 **Low battery** while on battery — configurable thresholds (default 50 % and 25 %), each once per outage
+- 🔥 **High load on battery** — e.g. a heater left on when the power went out (`HIGH_LOAD_W`, default 1000 W), once per outage
 - ⚠️ **AC output turned off** while it should be on (ECO mode, or someone switched it off)
 - 📡 **Station offline** / **back online** — reported as "no connection, state unknown", never as an outage or a restoration
 - 🔋 **Battery charged** — when the battery reaches 100 % (`FULL_CHARGE_SOC`) after power came back
@@ -347,7 +348,8 @@ the bot at startup with a message naming the variable. See [.env.example](.env.e
 | `DEBOUNCE_POLLS` | `2` | also used for the AC-off alert |
 | `RESTORE_DEBOUNCE_POLLS` | `2` | |
 | `OFFLINE_GRACE_SECONDS` | `600` | no data this long → "station offline" |
-| `LOW_SOC_THRESHOLDS` | `30,15` | empty disables |
+| `LOW_SOC_THRESHOLDS` | `50,25` | empty disables |
+| `HIGH_LOAD_W` | `1000` | on battery, alert when the load stays at or above this, once per outage; `0` disables |
 | `ALERT_AC_OFF` | `true` | |
 | `NOTIFY_STARTUP` | `true` | "Bot started" message when the grid is present |
 | `FULL_CHARGE_SOC` | `100` | "battery charged" after an outage at this %; `0` disables |

@@ -378,8 +378,9 @@ async def test_schedule_warning_publication_and_planned_outage(
     clock.now = slot.start
     await poll(m, src, clock, battery)
     await poll(m, src, clock, battery)
-    assert sender.sent[-1].startswith("⚡ Power went out at 12:20")
-    assert sender.sent[-1].endswith("📅 On the schedule: 12:20–13:20")
+    assert sender.sent[-2].startswith("⚡ Power went out at 12:20")
+    assert sender.sent[-2].endswith("📅 On the schedule: 12:20–13:20")
+    assert sender.sent[-1].startswith("🔋 Battery is down to 40% (alert at 50%)")
     assert "Planned outage now: 12:20–13:20" in m.status_text()
     assert "Today, 20.11:\n• 12:20–13:20" in m.schedule_text()
 

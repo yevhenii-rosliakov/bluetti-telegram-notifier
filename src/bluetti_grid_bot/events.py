@@ -74,6 +74,16 @@ class LowBattery:
 
 
 @dataclass(frozen=True, slots=True)
+class HighLoad:
+    """On battery, the load stayed at or above ``high_load_w`` (e.g. a heater left on)."""
+
+    sn: str
+    load_w: float
+    soc: float | None
+    runtime_min: int | None
+
+
+@dataclass(frozen=True, slots=True)
 class BatteryFull:
     """The battery reached the configured level after grid power came back."""
 
@@ -111,6 +121,7 @@ Event = (
     | BotStartedOnGrid
     | OutageEndedUnobserved
     | LowBattery
+    | HighLoad
     | BatteryFull
     | AcOutputOff
     | StationOffline

@@ -24,6 +24,7 @@ from .events import (
     Event,
     GridLost,
     GridRestored,
+    HighLoad,
     LowBattery,
     OutageEndedUnobserved,
     StationOffline,
@@ -180,6 +181,12 @@ class Formatter:
                             runtime=self.duration(timedelta(minutes=ev.runtime_min)),
                         )
                     )
+                return "\n".join(lines)
+            case HighLoad():
+                lines = [t("high_load", prefix=p, load=_num(ev.load_w)), *self._details(ev.soc)]
+                if ev.runtime_min:
+                    runtime = self.duration(timedelta(minutes=ev.runtime_min))
+                    lines.append(t("detail_runtime", runtime=runtime))
                 return "\n".join(lines)
             case BatteryFull():
                 return t(

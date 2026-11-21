@@ -15,6 +15,7 @@ from bluetti_grid_bot.events import (
     Event,
     GridLost,
     GridRestored,
+    HighLoad,
     LowBattery,
     OutageEndedUnobserved,
     StationOffline,
@@ -24,7 +25,7 @@ from bluetti_grid_bot.models import DetectionMode, GridState, Reading, Sample
 
 from .conftest import SN, at, make_sample
 
-ATS = DetectorConfig(mode=DetectionMode.ATS)
+ATS = DetectorConfig(mode=DetectionMode.ATS, low_soc_thresholds=(30, 15))
 PASS = DetectorConfig(mode=DetectionMode.PASSTHROUGH)
 GRID_IN = DetectorConfig(mode=DetectionMode.GRID_INPUT)
 
@@ -388,6 +389,38 @@ def test_low_soc_disabled() -> None:
     cfg = replace(ATS, low_soc_thresholds=())
     _, events = run(cfg, [make_sample(grid=0, ac=50, soc=5)])
     assert kinds(events) == ["BotStartedOnBattery"]
+
+
+# high load
+
+
+def test_high_load_on_battery_debounced_once_per_outage() -> None:
+    heater = make_sample(grid=0, ac=1800, soc=80, DsgFullTime="50")
+    idle = make_sample(grid=0, ac=100, soc=78)
+    s, events = run(ATS, [GRID_IDLE, ON_BATTERY, ON_BATTERY, heater, heater, idle, heater, heater])
+    highs = [(m, e) for m, e in events if isinstance(e, HighLoad)]
+    assert [m for m, _ in highs] == [4]
+    assert highs[0][1] == HighLoad(SN, 1800, 80, 50)
+
+    # Next outage: armed again.
+    s, _ = run(ATS, [GRID_IDLE, GRID_IDLE], s, start=20)
+    _, events = run(ATS, [heater, heater, heater], s, start=30)
+    assert kinds(events) == ["GridLost", "HighLoad"]
+
+
+def test_high_load_counts_ac_and_dc() -> None:
+    _, events = run(ATS, [make_sample(grid=0, ac=600, dc=500, soc=90)] * 3)
+    assert "HighLoad" in kinds(events)
+
+
+def test_high_load_ignored_on_grid_and_when_disabled() -> None:
+    passthrough_grid = make_sample(grid=2000, ac=1800, soc=90)
+    _, events = run(PASS, [passthrough_grid] * 4)
+    assert "HighLoad" not in kinds(events)
+
+    cfg = replace(ATS, high_load_w=0)
+    _, events = run(cfg, [make_sample(grid=0, ac=3000, soc=90)] * 4)
+    assert "HighLoad" not in kinds(events)
 
 
 # AC output off
