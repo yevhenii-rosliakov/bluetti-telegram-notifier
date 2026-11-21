@@ -3,8 +3,9 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
+import aiohttp
 import pytest
 from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError, TelegramRetryAfter
 from aiogram.filters import CommandObject
@@ -17,7 +18,8 @@ from bluetti_grid_bot.health import HealthServer, Metrics
 from bluetti_grid_bot.messages import Formatter, Translator
 from bluetti_grid_bot.models import GridState, Sample, Station
 from bluetti_grid_bot.monitor import AUTH_RETRY_S, Monitor
-from bluetti_grid_bot.notifier import TelegramNotifier, parse_history_limit
+from bluetti_grid_bot.notifier import TelegramNotifier, parse_history_limit, parse_stats_days
+from bluetti_grid_bot.schedule import Schedule, ScheduleClient, ScheduleService, Slot
 from bluetti_grid_bot.storage import Storage
 
 from .conftest import SN, T0, make_sample, make_settings
@@ -93,6 +95,7 @@ async def test_full_outage_cycle_records_history_and_notifies(
     assert (outage.start, outage.end) == (T0 + timedelta(minutes=1), T0 + timedelta(minutes=3))
     assert m.ready()
     assert "Grid: present" in m.status_text()
+    assert "Outages: 1\nWithout power: 2 min" in m.status_text()
     assert "12:01 — 12:03" in m.history_text(5)
     state, raw, _ = storage.load_device(SN)
     assert state is not None
@@ -314,3 +317,111 @@ async def test_metrics_disabled() -> None:
     async with TestClient(TestServer(server.app())) as client:
         assert (await client.get("/healthz")).status == 503
         assert (await client.get("/metrics")).status == 404
+
+
+# reports and schedule
+
+
+def with_schedule(m: Monitor, storage: Storage, schedule: Schedule) -> ScheduleService:
+    client = ScheduleClient(cast(aiohttp.ClientSession, None), "yasno", "kyiv", schedule.group)
+    service = ScheduleService(client, storage)
+    service.current = schedule
+    m.schedule = service
+    return service
+
+
+async def test_weekly_summary_sent_once(tmp_path: Path, storage: Storage) -> None:
+    # T0 is Friday 12:00 UTC.
+    m, src, sender, clock = make_monitor(tmp_path, storage, weekly_summary="fri 12:00")
+    await m.start()
+    await poll(m, src, clock, {SN: make_sample()})
+    await poll(m, src, clock, {SN: make_sample()})
+    summaries = [t for t in sender.sent if t.startswith("📅 Weekly summary")]
+    assert len(summaries) == 1
+    assert "13.11 – 20.11" in summaries[0]
+    assert "No outages ✅" in summaries[0]
+
+
+async def test_weekly_summary_skipped_when_missed(tmp_path: Path, storage: Storage) -> None:
+    m, src, sender, clock = make_monitor(tmp_path, storage, weekly_summary="thu 23:00")
+    await m.start()
+    await poll(m, src, clock, {SN: make_sample()})
+    assert not any(t.startswith("📅 Weekly") for t in sender.sent)
+    assert storage.get("weekly_summary_sent") is not None
+
+
+async def test_schedule_warning_publication_and_planned_outage(
+    tmp_path: Path, storage: Storage
+) -> None:
+    m, src, sender, clock = make_monitor(tmp_path, storage, notify_startup=False)
+    today = T0.date()
+    slot = Slot(T0 + timedelta(minutes=20), T0 + timedelta(minutes=80))
+    service = with_schedule(m, storage, Schedule("3.1", (slot,), (today,)))
+    await m.start()
+    grid = {SN: make_sample(grid=0, ac=0, soc=40)}
+    await poll(m, src, clock, grid)
+    # Today's schedule seen for the first time: no "published" message, but a warning.
+    assert sender.sent == [
+        "⏰ Planned outage in 20 min: 12:20–13:20 (group 3.1)\nBattery: 40%\n"
+        "The battery is not charged much — keep that in mind."
+    ]
+    await poll(m, src, clock, grid)
+    assert len(sender.sent) == 1  # warned once per slot
+
+    tomorrow = Slot(T0 + timedelta(days=1), T0 + timedelta(days=1, hours=2))
+    service.current = Schedule("3.1", (slot, tomorrow), (today, today + timedelta(days=1)))
+    await poll(m, src, clock, grid)
+    assert sender.sent[-1].startswith("📅 A new outage schedule is out.\n21.11:\n• 12:00–14:00")
+
+    battery = {SN: make_sample(grid=0, ac=80, soc=40)}
+    clock.now = slot.start
+    await poll(m, src, clock, battery)
+    await poll(m, src, clock, battery)
+    assert sender.sent[-1].startswith("⚡ Power went out at 12:20")
+    assert sender.sent[-1].endswith("📅 On the schedule: 12:20–13:20")
+    assert "Planned outage now: 12:20–13:20" in m.status_text()
+    assert "Today, 20.11:\n• 12:20–13:20" in m.schedule_text()
+
+
+async def test_grid_lost_shows_typical_outage(tmp_path: Path, storage: Storage) -> None:
+    for i in range(3):
+        start = T0 - timedelta(days=i + 1)
+        storage.start_outage(SN, start, None)
+        storage.end_outage(SN, start + timedelta(hours=2), None)
+    m, src, sender, clock = make_monitor(tmp_path, storage, notify_startup=False)
+    await m.start()
+    await poll(m, src, clock, {SN: make_sample(grid=0, ac=0)})
+    battery = {SN: make_sample(grid=0, ac=80, soc=90, DsgFullTime="600")}
+    await poll(m, src, clock, battery)
+    await poll(m, src, clock, battery)
+    assert sender.sent[-1].splitlines()[-2:] == [
+        "📈 Outages usually last ≈ 2 h (median, last 30 days)",
+        "The battery should last until power is back as usual (≈ 1 h 59 min more) ✅",
+    ]
+    assert "Outages usually last ≈ 2 h" in m.status_text()
+    assert m.stats_text(30).startswith("📊 Last 30 days\n\nOutages: 4")
+
+
+async def test_schedule_service_fetches_and_persists(tmp_path: Path, storage: Storage) -> None:
+    from aioresponses import aioresponses
+
+    from .test_reports import YASNO
+
+    async with aiohttp.ClientSession() as session:
+        client = ScheduleClient(session, "yasno", "kyiv", "3.1")
+        service = ScheduleService(client, storage)
+        with aioresponses() as mock:
+            mock.get(client.url, payload=YASNO)
+            mock.get(client.url, status=503)
+            await service.refresh()
+            assert service.current is not None
+            await service.refresh()  # failure keeps the last schedule
+        assert len(service.current.slots) == 3
+    reloaded = ScheduleService(client, storage)
+    assert reloaded.current == service.current
+
+
+def test_parse_stats_days() -> None:
+    assert parse_stats_days(None) == 30
+    assert parse_stats_days(CommandObject(command="stats", args="7")) == 7
+    assert parse_stats_days(CommandObject(command="stats", args="9999")) == 365

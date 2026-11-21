@@ -10,8 +10,25 @@ power station as the sensor. It polls the station through the BLUETTI cloud and 
 - 🔋 **Low battery** while on battery — configurable thresholds (default 30 % and 15 %), each once per outage
 - ⚠️ **AC output turned off** while it should be on (ECO mode, or someone switched it off)
 - 📡 **Station offline** / **back online** — reported as "no connection, state unknown", never as an outage or a restoration
+- 🔋 **Battery charged** — when the battery reaches 100 % (`FULL_CHARGE_SOC`) after power came back
+- 📈 **Will the battery last?** — on battery, compares the remaining runtime with how long outages usually last (median of the last 30 days)
+- 📅 **Weekly summary** — every Monday at 09:00 (`WEEKLY_SUMMARY`): outages, time without power, longest outage, compared with the week before
+- ⏰ **Planned outage schedule** (optional, Kyiv / Kyiv region / Dnipro / Odesa) — a warning before a planned outage, a message when a new schedule is published or changed, and "on the schedule" / "not on the schedule" when the power goes out
 
-Commands: `/status`, `/history [n]`, `/help`. Several stations per account are supported.
+Commands: `/status` (current state + last 7 days), `/stats [days]` (statistics with a breakdown by day and hour, default 30 days), `/schedule` (planned outages for today and tomorrow), `/history [n]`, `/help`. Several stations per account are supported.
+
+### Planned outage schedule
+
+Set `SCHEDULE_PROVIDER`, `SCHEDULE_REGION` and `SCHEDULE_GROUP` (your queue, e.g. `3.1`; look it up on
+the DTEK or Yasno site by address). Both sources are unofficial and may change or stop working; the
+bot keeps the last schedule it got and keeps working without it.
+
+| `SCHEDULE_PROVIDER` | `SCHEDULE_REGION` | Source |
+|---|---|---|
+| `yasno` | `kyiv`, `dnipro-dnem`, `dnipro-cek` | Yasno app API (first-party, minute precision) |
+| `outage-data-ua` | `kyiv`, `kyiv-region`, `dnipro`, `odesa` | [Baskerville42/outage-data-ua](https://github.com/Baskerville42/outage-data-ua) (scraped from DTEK sites, half-hour precision) |
+
+Schedule times are always Kyiv time; set `TZ=Europe/Kyiv` so the messages match.
 
 > **Unofficial API.** This project uses the same *unofficial* BLUETTI cloud API as the
 > community [Home Assistant integration](https://github.com/bluetti-community/bluetti-home-assistant)
@@ -236,6 +253,12 @@ the bot at startup with a message naming the variable. See [.env.example](.env.e
 | `LOW_SOC_THRESHOLDS` | `30,15` | empty disables |
 | `ALERT_AC_OFF` | `true` | |
 | `NOTIFY_STARTUP` | `true` | "Bot started" message when the grid is present |
+| `FULL_CHARGE_SOC` | `100` | "battery charged" after an outage at this %; `0` disables |
+| `WEEKLY_SUMMARY` | `mon 09:00` | weekday and time (in `TZ`) of the weekly summary; `off` disables |
+| `SCHEDULE_PROVIDER` | `off` | `off` / `yasno` / `outage-data-ua`, see [Planned outage schedule](#planned-outage-schedule) |
+| `SCHEDULE_REGION` | — | depends on the provider |
+| `SCHEDULE_GROUP` | — | your queue, e.g. `3.1` |
+| `SCHEDULE_WARN_MINUTES` | `30` | warn this long before a planned outage; `0` disables |
 | `BOT_LANGUAGE` | `uk` | `uk` / `en` |
 | `TZ` | `UTC` | time zone for times in messages, e.g. `Europe/Kyiv` |
 | `STATE_DIR` | `/data` | tokens, state, history (SQLite) |

@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 import time
 from collections.abc import Callable
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Protocol
 
 from .auth import AuthError, AuthExpiredError
@@ -26,7 +27,9 @@ from .events import (
 from .health import Metrics
 from .messages import Formatter, StationView
 from .models import GridState, Reading, Sample, Station, parse_reading
-from .storage import Storage
+from .schedule import KYIV, ScheduleService, day_fingerprints
+from .stats import typical_duration
+from .storage import Outage, Storage
 
 log = logging.getLogger(__name__)
 
@@ -37,7 +40,18 @@ START_RETRY_MAX_S = 300.0
 # /status fetches fresh data, but not more often than this (several users, button mashing).
 REFRESH_MIN_INTERVAL_S = 10.0
 REFRESH_TIMEOUT_S = 25.0
+# /status shows outage statistics for this many last days.
+STATS_DAYS = 7
+# "Outages usually last ..." is the median over this many last days.
+TYPICAL_DAYS = 30
+# A weekly summary is skipped if the bot was not running at that time for longer than this.
+WEEKLY_LATE_MAX = timedelta(hours=12)
+# An outage starting this close to a planned slot counts as planned.
+SCHEDULE_SLACK = timedelta(minutes=15)
 _AUTH_NOTIFIED_KEY = "auth_expired_notified"
+_WEEKLY_KEY = "weekly_summary_sent"
+_SCHEDULE_SEEN_KEY = "schedule_seen"
+_SCHEDULE_WARNED_KEY = "schedule_warned"
 
 
 class Sender(Protocol):
@@ -54,6 +68,7 @@ class Monitor:
         formatter: Formatter,
         metrics: Metrics,
         *,
+        schedule: ScheduleService | None = None,
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
         monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
@@ -64,6 +79,7 @@ class Monitor:
         self.sender = sender
         self.formatter = formatter
         self.metrics = metrics
+        self.schedule = schedule
         self._now = now
         self._monotonic = monotonic
         self.stations: list[Station] = []
@@ -143,6 +159,8 @@ class Monitor:
 
         for st in self.stations:
             await self._process(st, samples.get(st.sn), now)
+        await self._weekly_summary(now)
+        await self._schedule_alerts(now)
         return AUTH_RETRY_S if self.auth_expired else float(self.settings.poll_interval_seconds)
 
     async def _process(self, st: Station, sample: Sample | None, now: datetime) -> None:
@@ -197,8 +215,83 @@ class Monitor:
                 return
             case _:
                 pass
-        if text := self.formatter.event(event, now):
+        text = self.formatter.event(event, now)
+        if text and isinstance(event, GridLost):
+            text = "\n".join([text, *self._grid_lost_extra(event, now)])
+        if text:
             await self.sender.broadcast(text)
+
+    def _grid_lost_extra(self, event: GridLost, now: datetime) -> list[str]:
+        lines = self.formatter.runtime_hint(
+            event.runtime_min, now - event.at, self._typical(event.sn, now)
+        )
+        if self.schedule is not None and self.schedule.current is not None:
+            match = self.formatter.schedule_match(self.schedule.current, event.at, SCHEDULE_SLACK)
+            if match:
+                lines.append(match)
+        return lines
+
+    def _typical(self, sn: str, now: datetime) -> timedelta | None:
+        return typical_duration(
+            self.storage.outages_since(now - timedelta(days=TYPICAL_DAYS), [sn])
+        )
+
+    # periodic messages
+
+    async def _weekly_summary(self, now: datetime) -> None:
+        spec = self.settings.weekly_summary_at
+        if spec is None or not self.stations:
+            return
+        weekday, at = spec
+        tz = self.settings.zone
+        local = now.astimezone(tz)
+        day = local.date() - timedelta(days=(local.weekday() - weekday) % 7)
+        due = datetime.combine(day, at, tz)
+        if due > local:
+            due -= timedelta(days=7)
+        sent = self.storage.get(_WEEKLY_KEY)
+        if sent is not None and datetime.fromisoformat(sent) >= due:
+            return
+        self.storage.set(_WEEKLY_KEY, due.isoformat())
+        if now - due > WEEKLY_LATE_MAX:
+            return
+        sns = [st.sn for st in self.stations]
+        outages = self.storage.outages_since(now - timedelta(days=2 * STATS_DAYS), sns)
+        await self.sender.broadcast(self.formatter.weekly(self.stations, outages, now))
+
+    async def _schedule_alerts(self, now: datetime) -> None:
+        if self.schedule is None or (schedule := self.schedule.current) is None:
+            return
+        # A new day published (usually tomorrow's) or a published day changed.
+        today = now.astimezone(KYIV).date().isoformat()
+        prints = day_fingerprints(schedule)
+        stored = self.storage.get(_SCHEDULE_SEEN_KEY)
+        seen: dict[str, str] = json.loads(stored) if stored else {}
+        if stored is not None:
+            for day, fingerprint in sorted(prints.items()):
+                if day >= today and seen.get(day) != fingerprint:
+                    text = self.formatter.schedule_published(
+                        schedule, date.fromisoformat(day), day in seen, now
+                    )
+                    await self.sender.broadcast(text)
+        seen.update(prints)
+        self.storage.set(
+            _SCHEDULE_SEEN_KEY, json.dumps({d: f for d, f in seen.items() if d >= today})
+        )
+
+        warn = timedelta(minutes=self.settings.schedule_warn_minutes)
+        slot = schedule.upcoming(now)
+        if not warn or slot is None or slot.start - now > warn:
+            return
+        if self.storage.get(_SCHEDULE_WARNED_KEY) == slot.start.isoformat():
+            return
+        self.storage.set(_SCHEDULE_WARNED_KEY, slot.start.isoformat())
+        views = self.views()
+        if views and all(v.state.effective is GridState.BATTERY for v in views):
+            return  # already without power
+        await self.sender.broadcast(
+            self.formatter.schedule_warning(slot, schedule.group, views, now)
+        )
 
     def _update_metrics(self, st: Station, state: DeviceState) -> None:
         label = st.name
@@ -237,17 +330,27 @@ class Monitor:
 
     # views for /status, /history and the health endpoints
 
-    def views(self) -> list[StationView]:
-        return [
-            StationView(
-                station=st,
-                state=self.states[st.sn],
-                reading=self.readings.get(st.sn),
-                online=self.online.get(st.sn),
-                last_poll=self.last_data.get(st.sn),
+    def views(self, with_stats: bool = False) -> list[StationView]:
+        recent: list[Outage] = []
+        if with_stats:
+            since = self._now() - timedelta(days=TYPICAL_DAYS)
+            recent = self.storage.outages_since(since, [st.sn for st in self.stations])
+        views = []
+        for st in self.stations:
+            # The formatter cuts these to the STATS_DAYS window.
+            own = tuple(o for o in recent if o.sn == st.sn)
+            views.append(
+                StationView(
+                    station=st,
+                    state=self.states[st.sn],
+                    reading=self.readings.get(st.sn),
+                    online=self.online.get(st.sn),
+                    last_poll=self.last_data.get(st.sn),
+                    recent_outages=own if with_stats else None,
+                    typical_outage=typical_duration(own),
+                )
             )
-            for st in self.stations
-        ]
+        return views
 
     async def refresh(self) -> None:
         """Fetch current values for /status.
@@ -281,7 +384,23 @@ class Monitor:
             self._update_metrics(st, self.states[st.sn])
 
     def status_text(self) -> str:
-        return self.formatter.status(self.views(), self._now(), self.auth_expired)
+        return self.formatter.status(
+            self.views(with_stats=True),
+            self._now(),
+            self.auth_expired,
+            STATS_DAYS,
+            self.schedule.current if self.schedule is not None else None,
+        )
+
+    def stats_text(self, days: int) -> str:
+        now = self._now()
+        sns = [st.sn for st in self.stations]
+        outages = self.storage.outages_since(now - timedelta(days=days), sns)
+        return self.formatter.stats_report(self.stations, outages, now, days)
+
+    def schedule_text(self) -> str:
+        current = self.schedule.current if self.schedule is not None else None
+        return self.formatter.schedule(current, self._now())
 
     def history_text(self, limit: int) -> str:
         outages = self.storage.history(limit, [s.sn for s in self.stations] or None)

@@ -251,3 +251,36 @@ def test_history_formatting() -> None:
     assert lines[1] == "• 21.11 00:00 — ongoing (1 h)"
     assert lines[2] == "• 20.11 14:00 — 15:33 (≈1 h 33 min)"
     assert fmt().history([], at(0)) == "No outages recorded yet."
+
+
+def test_outages_since(storage: Storage) -> None:
+    storage.start_outage(SN, at(0), None)
+    storage.end_outage(SN, at(30), None)
+    storage.start_outage(SN, at(60), None)
+    storage.end_outage(SN, at(90), None)
+    storage.start_outage(SN, at(120), None)
+    storage.start_outage("OTHER", at(100), None)
+    items = storage.outages_since(at(45), [SN])
+    assert [(o.start, o.end) for o in items] == [(at(60), at(90)), (at(120), None)]
+    assert storage.outages_since(at(0), []) == []
+
+
+def test_status_with_weekly_stats() -> None:
+    from bluetti_grid_bot.storage import Outage
+
+    now = at(7 * 24 * 60)
+    state = DeviceState(SN, baseline_pending=False, power=GridState.BATTERY, power_since=at(0))
+    outages = [
+        # Started before the 7-day window: counts only from the window start.
+        Outage(1, SN, at(-60), None, at(60), None),
+        Outage(2, SN, now - timedelta(minutes=30), None, None, None),
+    ]
+    v = StationView(Station(SN, "PR200V2", "Home"), state, None, True, now, outages)
+    text = fmt().status([v], now, auth_expired=False)
+    assert "📊 Last 7 days\nOutages: 2\nWithout power: 1 h 30 min (power 99% of the time)" in text
+    assert "Longest: 1 h" in text
+
+    v = StationView(Station(SN, "PR200V2", "Home"), state, None, True, now, [])
+    assert "Last 7 days\nNo outages ✅" in fmt().status([v], now, auth_expired=False)
+    v = StationView(Station(SN, "PR200V2", "Home"), state, None, True, now)
+    assert "Last 7 days" not in fmt().status([v], now, auth_expired=False)

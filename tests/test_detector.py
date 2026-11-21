@@ -9,6 +9,7 @@ import pytest
 from bluetti_grid_bot.detector import DetectorConfig, DeviceState, classify, evaluate
 from bluetti_grid_bot.events import (
     AcOutputOff,
+    BatteryFull,
     BotStartedOnBattery,
     BotStartedOnGrid,
     Event,
@@ -450,3 +451,48 @@ def test_from_dict_ignores_unknown_keys() -> None:
 def test_startup_grid_event_only_once() -> None:
     _, events = run(ATS, [GRID_IDLE, GRID_IDLE, GRID_IDLE])
     assert [type(e) for _, e in events] == [BotStartedOnGrid]
+
+
+# battery full after an outage
+
+
+def test_battery_full_reported_once_after_restore() -> None:
+    s = baseline(ATS, GRID_IDLE)
+    low = make_sample(grid=300, ac=0, soc=40)
+    full = make_sample(grid=0, ac=0, soc=100)
+    _, events = run(ATS, [ON_BATTERY, ON_BATTERY, low, low, low, full, full], s, start=1)
+    assert kinds(events) == ["GridLost", "GridRestored", "BatteryFull"]
+    minute, ev = events[-1]
+    assert isinstance(ev, BatteryFull)
+    assert (minute, ev.soc, ev.charging_since) == (6, 100, at(3))
+
+
+def test_battery_full_not_reported_when_restored_full_or_disabled() -> None:
+    s = baseline(ATS, GRID_IDLE)
+    full = make_sample(grid=0, ac=0, soc=100)
+    on_batt_full = make_sample(grid=0, ac=50, soc=100)
+    _, events = run(ATS, [on_batt_full, on_batt_full, full, full, full], s, start=1)
+    assert "BatteryFull" not in kinds(events)
+
+    cfg = replace(ATS, full_charge_soc=0)
+    low = make_sample(grid=300, ac=0, soc=40)
+    _, events = run(cfg, [ON_BATTERY, ON_BATTERY, low, low, full], s, start=1)
+    assert "BatteryFull" not in kinds(events)
+
+
+def test_battery_full_cancelled_by_a_new_outage() -> None:
+    s = baseline(ATS, GRID_IDLE)
+    low = make_sample(grid=300, ac=0, soc=40)
+    s, _ = run(ATS, [ON_BATTERY, ON_BATTERY, low, low], s, start=1)
+    assert s.charging_since is not None
+    s, _ = run(ATS, [ON_BATTERY, ON_BATTERY], s, start=5)
+    assert s.charging_since is None
+
+
+def test_grid_lost_carries_runtime() -> None:
+    s = baseline(ATS, GRID_IDLE)
+    sample = make_sample(grid=0, ac=120, soc=90, DsgFullTime="300")
+    _, events = run(ATS, [sample, sample], s, start=1)
+    ((_, ev),) = events
+    assert isinstance(ev, GridLost)
+    assert ev.runtime_min == 300

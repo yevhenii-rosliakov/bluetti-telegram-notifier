@@ -13,6 +13,7 @@ from typing import Any
 
 from .events import (
     AcOutputOff,
+    BatteryFull,
     BotStartedOnBattery,
     BotStartedOnGrid,
     Event,
@@ -37,6 +38,8 @@ class DetectorConfig:
     offline_grace: timedelta = timedelta(seconds=600)
     low_soc_thresholds: tuple[int, ...] = (30, 15)
     alert_ac_off: bool = True
+    # Report when the battery reaches this SOC after grid power came back; 0 disables.
+    full_charge_soc: int = 100
 
 
 @dataclass(slots=True)
@@ -67,6 +70,8 @@ class DeviceState:
     low_soc_fired: tuple[int, ...] = ()
     ac_off_count: int = 0
     ac_off_alerted: bool = False
+    # Grid came back with the battery below ``full_charge_soc``: report when it is full.
+    charging_since: datetime | None = None
     # passthrough mode: SOC at the last poll that showed grid input.
     soc_at_grid: float | None = None
 
@@ -107,6 +112,7 @@ class DeviceState:
                 "last_seen_at",
                 "unreachable_since",
                 "gap_start",
+                "charging_since",
             ):
                 value = datetime.fromisoformat(value)
             elif name == "low_soc_fired":
@@ -199,7 +205,12 @@ def _load(reading: Reading) -> float | None:
 
 
 def _baseline(
-    s: DeviceState, observed: GridState, reading: Reading, now: datetime, prev_seen: datetime | None
+    s: DeviceState,
+    observed: GridState,
+    reading: Reading,
+    cfg: DetectorConfig,
+    now: datetime,
+    prev_seen: datetime | None,
 ) -> list[Event]:
     events: list[Event] = []
     persisted = s.power
@@ -217,6 +228,7 @@ def _baseline(
     else:
         if persisted is GridState.BATTERY:
             events.append(OutageEndedUnobserved(s.sn, now))
+            _arm_full_charge(s, reading, cfg, now)
         if persisted is not GridState.GRID or s.power_since is None:
             s.power_since = now
             s.power_since_earliest = None
@@ -253,17 +265,37 @@ def _debounce(
     earliest = s.candidate_earliest
     events: list[Event] = []
     if observed is GridState.BATTERY:
-        events.append(GridLost(s.sn, at, earliest, reading.soc, _load(reading)))
+        events.append(
+            GridLost(s.sn, at, earliest, reading.soc, _load(reading), reading.dsg_minutes)
+        )
     elif s.power is GridState.BATTERY:
         events.append(
             GridRestored(s.sn, at, earliest, s.power_since, s.power_since_earliest, reading.soc)
         )
+        _arm_full_charge(s, reading, cfg, at)
     s.power = observed
     s.power_since = at
     s.power_since_earliest = earliest
     s.low_soc_fired = ()
     _reset_candidate(s)
     return events
+
+
+def _arm_full_charge(s: DeviceState, reading: Reading, cfg: DetectorConfig, at: datetime) -> None:
+    if cfg.full_charge_soc and (reading.soc is None or reading.soc < cfg.full_charge_soc):
+        s.charging_since = at
+
+
+def _full_charge(
+    s: DeviceState, reading: Reading, cfg: DetectorConfig, now: datetime
+) -> list[Event]:
+    if s.power is not GridState.GRID:
+        s.charging_since = None
+        return []
+    if s.charging_since is None or reading.soc is None or reading.soc < cfg.full_charge_soc:
+        return []
+    since, s.charging_since = s.charging_since, None
+    return [BatteryFull(s.sn, reading.soc, since, now)]
 
 
 def _low_soc(s: DeviceState, reading: Reading, cfg: DetectorConfig) -> list[Event]:
@@ -329,11 +361,12 @@ def evaluate(
 
     if observed.state is not None:
         if s.baseline_pending:
-            events += _baseline(s, observed.state, reading, now, prev_seen)
+            events += _baseline(s, observed.state, reading, cfg, now, prev_seen)
         else:
             events += _debounce(s, observed.state, reading, cfg, now)
 
     if not s.baseline_pending:
         events += _low_soc(s, reading, cfg)
+        events += _full_charge(s, reading, cfg, now)
     events += _ac_off(s, reading, cfg, now)
     return Result(s, events, observed)

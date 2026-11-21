@@ -14,7 +14,7 @@ import sqlite3
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -231,3 +231,13 @@ class Storage:
         query += " ORDER BY start_at DESC, id DESC LIMIT ?"
         params.append(limit)
         return [self._row_to_outage(r) for r in self._conn.execute(query, params).fetchall()]
+
+    def outages_since(self, since: datetime, sns: list[str]) -> list[Outage]:
+        """Outages of these stations that were still going on at or after ``since``."""
+        if not sns:
+            return []
+        # Timestamps are stored as UTC ISO strings, so they compare correctly as text.
+        query = "SELECT * FROM outages WHERE (end_at IS NULL OR end_at >= ?)"
+        query += f" AND sn IN ({','.join('?' * len(sns))}) ORDER BY start_at, id"
+        rows = self._conn.execute(query, [_ts(since.astimezone(UTC)), *sns]).fetchall()
+        return [self._row_to_outage(r) for r in rows]

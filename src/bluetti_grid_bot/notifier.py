@@ -27,6 +27,8 @@ log = logging.getLogger(__name__)
 SEND_ATTEMPTS = 4
 HISTORY_DEFAULT = 10
 HISTORY_MAX = 50
+STATS_DEFAULT_DAYS = 30
+STATS_MAX_DAYS = 365
 
 
 class TelegramNotifier:
@@ -68,13 +70,21 @@ class TelegramNotifier:
         self._metrics.notifications.labels("error").inc()
 
 
-def parse_history_limit(command: CommandObject | None) -> int:
+def _int_arg(command: CommandObject | None, default: int, maximum: int) -> int:
     arg = (command.args or "").strip() if command else ""
     try:
-        n = int(arg.split()[0]) if arg else HISTORY_DEFAULT
+        n = int(arg.split()[0]) if arg else default
     except ValueError:
-        n = HISTORY_DEFAULT
-    return max(1, min(HISTORY_MAX, n))
+        n = default
+    return max(1, min(maximum, n))
+
+
+def parse_history_limit(command: CommandObject | None) -> int:
+    return _int_arg(command, HISTORY_DEFAULT, HISTORY_MAX)
+
+
+def parse_stats_days(command: CommandObject | None) -> int:
+    return _int_arg(command, STATS_DEFAULT_DAYS, STATS_MAX_DAYS)
 
 
 def build_router(monitor: Monitor, allowed_chat_ids: frozenset[int]) -> Router:
@@ -95,6 +105,14 @@ def build_router(monitor: Monitor, allowed_chat_ids: frozenset[int]) -> Router:
     async def history(message: Message, command: CommandObject) -> None:
         await message.answer(monitor.history_text(parse_history_limit(command)))
 
+    @router.message(Command("stats"))
+    async def stats(message: Message, command: CommandObject) -> None:
+        await message.answer(monitor.stats_text(parse_stats_days(command)))
+
+    @router.message(Command("schedule"))
+    async def schedule(message: Message) -> None:
+        await message.answer(monitor.schedule_text())
+
     @router.message(CommandStart())
     @router.message(Command("help"))
     async def help_(message: Message) -> None:
@@ -114,6 +132,8 @@ async def set_commands(bot: Bot, t: Translator) -> None:
         await bot.set_my_commands(
             [
                 BotCommand(command="status", description=t("cmd_status")),
+                BotCommand(command="stats", description=t("cmd_stats")),
+                BotCommand(command="schedule", description=t("cmd_schedule")),
                 BotCommand(command="history", description=t("cmd_history")),
                 BotCommand(command="help", description=t("cmd_help")),
             ]
