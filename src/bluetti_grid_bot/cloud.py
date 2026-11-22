@@ -213,6 +213,10 @@ class BluettiCloud:
         params: dict[str, str] | None,
         json_body: Any,
     ) -> dict[str, Any]:
+        # The token is in a header and is never logged.
+        log.debug(
+            "BLUETTI request: %s %s params=%s body=%s", method, url, params, _compact(json_body)
+        )
         try:
             async with self._session.request(
                 method,
@@ -226,6 +230,7 @@ class BluettiCloud:
                 text = await resp.text()
         except (aiohttp.ClientError, TimeoutError) as exc:
             raise TransientCloudError(f"{method} {url}: {exc!r}") from exc
+        log.debug("BLUETTI response: %s %s HTTP %d %s", method, url, status, _one_line(text))
         if status >= 500 or status == 429:
             raise TransientCloudError(f"{method} {url}: HTTP {status}")
         try:
@@ -241,6 +246,18 @@ class BluettiCloud:
         except (TypeError, ValueError):
             raise CloudError(f"{method} {url}: HTTP {status}, no msgCode") from None
         return envelope
+
+
+def _compact(value: Any) -> str:
+    return "-" if value is None else json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+def _one_line(text: str) -> str:
+    """The answer as a single log line: JSON re-serialized compactly, anything else cut short."""
+    try:
+        return _compact(json.loads(text))
+    except ValueError:
+        return " ".join(text.split())[:500]
 
 
 class StateSource(Protocol):
