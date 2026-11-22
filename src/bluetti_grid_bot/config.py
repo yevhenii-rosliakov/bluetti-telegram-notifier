@@ -61,8 +61,31 @@ CsvStr = Annotated[list[str], NoDecode]
 CsvInt = Annotated[list[int], NoDecode]
 
 # BLUETTI_<ID>_<FIELD>: per-station settings when BLUETTI_STATIONS lists several stations.
-SITE_FIELDS = ("name", "refresh_token", "access_token", "gateway", "device_sns")
+SITE_FIELDS = (
+    "name",
+    "refresh_token",
+    "access_token",
+    "gateway",
+    "device_sns",
+    "schedule_provider",
+    "schedule_region",
+    "schedule_group",
+    "schedule_warn_minutes",
+)
 _SITE_VAR = re.compile(r"bluetti_([a-z0-9]+)_(" + "|".join(SITE_FIELDS) + ")")
+
+
+@dataclass(frozen=True, slots=True)
+class ScheduleSource:
+    """Where the planned outage schedule of a site comes from."""
+
+    provider: str
+    region: str
+    group: str
+
+    @property
+    def key(self) -> str:
+        return f"{self.provider}:{self.region}:{self.group}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,6 +101,9 @@ class Site:
     access_token: SecretStr | None = None
     gateway: str = "auto"
     device_sns: tuple[str, ...] = ()
+    schedule: ScheduleSource | None = None
+    # Minutes before a planned outage to warn at, largest first; empty = no warnings.
+    schedule_warn_minutes: tuple[int, ...] = (30,)
 
     def var(self, field: str) -> str:
         """Environment variable name of a setting of this site."""
@@ -160,7 +186,7 @@ class Settings(BaseSettings):
     schedule_provider: Literal["off", "yasno", "outage-data-ua"] = "off"
     schedule_region: str = ""
     schedule_group: str = ""
-    schedule_warn_minutes: int = Field(default=30, ge=0, le=720)
+    schedule_warn_minutes: CsvInt = Field(default_factory=lambda: [30])
 
     # Presentation / runtime
     bot_language: Literal["uk", "en"] = "uk"
@@ -199,6 +225,7 @@ class Settings(BaseSettings):
         "telegram_chat_ids",
         "telegram_allowed_chat_ids",
         "low_soc_thresholds",
+        "schedule_warn_minutes",
         mode="before",
     )
     @classmethod
@@ -255,6 +282,11 @@ class Settings(BaseSettings):
         if any(not 0 < v < 100 for v in value):
             raise ValueError("thresholds must be between 1 and 99")
         return sorted(set(value), reverse=True)
+
+    @field_validator("schedule_warn_minutes")
+    @classmethod
+    def _warn_minutes(cls, value: list[int]) -> list[int]:
+        return list(_warn_minutes(value))
 
     @field_validator("weekly_summary")
     @classmethod
@@ -347,16 +379,8 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _schedule(self) -> Settings:
-        if self.schedule_provider == "off":
-            return self
-        regions = PROVIDERS[self.schedule_provider]
-        if self.schedule_region not in regions:
-            raise ValueError(
-                f"SCHEDULE_REGION must be one of {', '.join(regions)} "
-                f"for SCHEDULE_PROVIDER={self.schedule_provider}"
-            )
-        if not re.fullmatch(r"\d{1,2}(\.\d)?", self.schedule_group):
-            raise ValueError("SCHEDULE_GROUP must be your queue, e.g. 3.1")
+        if not self.bluetti_stations:
+            self.sites  # noqa: B018 - validates the schedule settings
         return self
 
     # Derived values
@@ -389,6 +413,8 @@ class Settings(BaseSettings):
                     access_token=self.bluetti_access_token,
                     gateway=self.bluetti_gateway,
                     device_sns=tuple(self.bluetti_device_sns),
+                    schedule=self._schedule_source({}, ""),
+                    schedule_warn_minutes=tuple(self.schedule_warn_minutes),
                 )
             ]
         return [self.site(sid) for sid in self.bluetti_stations]
@@ -404,6 +430,12 @@ class Settings(BaseSettings):
             gateway = _gateway_setting(values.get("gateway") or self.bluetti_gateway)
         except ValueError as exc:
             raise ValueError(f"{site.var('GATEWAY')}: {exc}") from None
+        warn = tuple(self.schedule_warn_minutes)
+        if (text := values.get("schedule_warn_minutes")) is not None:
+            try:
+                warn = _warn_minutes([int(v) for v in _split(text)])
+            except ValueError as exc:
+                raise ValueError(f"{site.var('SCHEDULE_WARN_MINUTES')}: {exc}") from None
         return Site(
             sid,
             name=values.get("name", "").strip(),
@@ -411,7 +443,37 @@ class Settings(BaseSettings):
             access_token=_secret(values.get("access_token")),
             gateway=gateway,
             device_sns=tuple(_split(values.get("device_sns", ""))),
+            schedule=self._schedule_source(values, sid),
+            schedule_warn_minutes=warn,
         )
+
+    def _schedule_source(self, values: Mapping[str, str], sid: str) -> ScheduleSource | None:
+        """The schedule of a site: its BLUETTI_<ID>_SCHEDULE_* values, each defaulting to
+        the global SCHEDULE_* one."""
+
+        def get(field: str, default: str) -> str:
+            value = values.get(f"schedule_{field}")
+            return default if value is None else value.strip().lower()
+
+        def var(field: str) -> str:
+            name = f"SCHEDULE_{field}"
+            return f"BLUETTI_{sid.upper()}_{name} (or {name})" if sid else name
+
+        provider = get("provider", self.schedule_provider)
+        if provider == "off":
+            return None
+        if provider not in PROVIDERS:
+            raise ValueError(f"{var('PROVIDER')} must be off, {', '.join(PROVIDERS)}")
+        region = get("region", self.schedule_region)
+        if region not in PROVIDERS[provider]:
+            raise ValueError(
+                f"{var('REGION')} must be one of {', '.join(PROVIDERS[provider])} "
+                f"for SCHEDULE_PROVIDER={provider}"
+            )
+        group = get("group", self.schedule_group)
+        if not re.fullmatch(r"\d{1,2}(\.\d)?", group):
+            raise ValueError(f"{var('GROUP')} must be your queue, e.g. 3.1")
+        return ScheduleSource(provider, region, group)
 
     @property
     def db_path(self) -> Path:
@@ -449,10 +511,24 @@ class Settings(BaseSettings):
         }
         if self.bluetti_stations:
             values["sites"] = [
-                {"id": st.id, "name": st.name, "gateway": st.gateway, "sns": st.device_sns}
+                {
+                    "id": st.id,
+                    "name": st.name,
+                    "gateway": st.gateway,
+                    "sns": st.device_sns,
+                    "schedule": st.schedule.key if st.schedule else None,
+                    "warn": st.schedule_warn_minutes,
+                }
                 for st in self.sites
             ]
         return values
+
+
+def _warn_minutes(value: list[int]) -> tuple[int, ...]:
+    """Minutes before a planned outage, largest first; ``0`` alone disables the warnings."""
+    if any(not 0 <= v <= 720 for v in value):
+        raise ValueError("minutes must be between 0 and 720")
+    return tuple(sorted({v for v in value if v}, reverse=True))
 
 
 def _secret(value: str | None) -> SecretStr | None:

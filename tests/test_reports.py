@@ -230,9 +230,9 @@ def test_schedule_texts() -> None:
     assert f.schedule_match(s, at(-50), timedelta(minutes=15)) == "📅 On the schedule: 13:00–17:30"
     assert f.schedule_match(s, at(-120), timedelta(minutes=15)) == "📅 Not on the schedule"
     assert f.schedule_match(s, at(24 * 60), timedelta(minutes=15)) is None
-    status = f.status([], at(0), False, schedule=s)
+    status = f.status([], at(0), False, schedules=[("", s)])
     assert status.startswith("📅 Planned outage now: 13:00–17:30 (group 3.1)")
-    status = f.status([], at(240), False, schedule=s)
+    status = f.status([], at(240), False, schedules=[("", s)])
     assert status.startswith("📅 Next planned outage: 23:00–24:00")
 
 

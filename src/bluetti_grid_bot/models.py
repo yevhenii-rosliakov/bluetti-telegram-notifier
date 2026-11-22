@@ -122,3 +122,5 @@ class Station:
     sn: str
     model: str
     name: str
+    # BLUETTI_STATIONS id of the login it is polled with; "" for the single account.
+    site: str = ""

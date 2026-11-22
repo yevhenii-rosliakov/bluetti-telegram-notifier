@@ -285,6 +285,7 @@ class PollingStateSource:
         *,
         sns: Sequence[str] = (),
         names: dict[str, str] | None = None,
+        site: str = "",
         site_name: str = "",
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
@@ -292,6 +293,7 @@ class PollingStateSource:
         self._cloud = cloud
         self._wanted = list(sns)
         self._names = names or {}
+        self._site = site
         self._site_name = site_name
         self._clock = clock
         self._sleep = sleep
@@ -339,7 +341,7 @@ class PollingStateSource:
             name = info.name
         else:
             name = f"{model.split('-')[0] or 'BLUETTI'} …{sn[-4:]}"
-        return Station(sn=sn, model=model, name=name)
+        return Station(sn=sn, model=model, name=name, site=self._site)
 
     async def _bind(self) -> None:
         self._last_bind = self._clock()

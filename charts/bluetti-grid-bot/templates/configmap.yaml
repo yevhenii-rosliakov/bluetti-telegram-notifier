@@ -30,6 +30,24 @@ data:
   {{ $prefix }}DEVICE_SNS: {{ . | toString | quote }}
   {{- end }}
   {{- end }}
+  {{- with $st.schedule }}
+  {{- with .provider }}
+  {{ $prefix }}SCHEDULE_PROVIDER: {{ . | toString | quote }}
+  {{- end }}
+  {{- with .region }}
+  {{ $prefix }}SCHEDULE_REGION: {{ . | toString | quote }}
+  {{- end }}
+  {{- with .group }}
+  {{ $prefix }}SCHEDULE_GROUP: {{ . | toString | quote }}
+  {{- end }}
+  {{- if hasKey . "warnMinutes" }}
+  {{- if kindIs "slice" .warnMinutes }}
+  {{ $prefix }}SCHEDULE_WARN_MINUTES: {{ join "," .warnMinutes | quote }}
+  {{- else }}
+  {{ $prefix }}SCHEDULE_WARN_MINUTES: {{ .warnMinutes | toString | quote }}
+  {{- end }}
+  {{- end }}
+  {{- end }}
   {{- end }}
   STATE_DIR: /data
   HTTP_PORT: {{ .Values.httpPort | toString | quote }}

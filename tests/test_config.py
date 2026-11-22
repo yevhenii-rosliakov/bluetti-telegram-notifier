@@ -5,7 +5,14 @@ from pathlib import Path
 
 import pytest
 
-from bluetti_grid_bot.config import GATEWAYS, ConfigError, Settings, Site, load_settings
+from bluetti_grid_bot.config import (
+    GATEWAYS,
+    ConfigError,
+    ScheduleSource,
+    Settings,
+    Site,
+    load_settings,
+)
 from bluetti_grid_bot.models import DetectionMode
 
 from .conftest import make_settings
@@ -217,6 +224,53 @@ def test_station_validation_errors(
     for k, v in env.items():
         monkeypatch.setenv(k, v)
     with pytest.raises(ConfigError, match=message):
+        load_settings(_env_file=None)
+
+
+def test_schedule_per_station(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("BLUETTI_STATIONS", "home,dacha,office")
+    monkeypatch.setenv("SCHEDULE_PROVIDER", "yasno")
+    monkeypatch.setenv("SCHEDULE_REGION", "kyiv")
+    monkeypatch.setenv("SCHEDULE_GROUP", "3.1")
+    monkeypatch.setenv("BLUETTI_DACHA_SCHEDULE_PROVIDER", "outage-data-ua")
+    monkeypatch.setenv("BLUETTI_DACHA_SCHEDULE_REGION", "Kyiv-Region")
+    monkeypatch.setenv("BLUETTI_DACHA_SCHEDULE_GROUP", " 5.2 ")
+    monkeypatch.setenv("BLUETTI_OFFICE_SCHEDULE_PROVIDER", "off")
+    home, dacha, office = load_settings(_env_file=None).sites
+    assert home.schedule == ScheduleSource("yasno", "kyiv", "3.1")
+    assert dacha.schedule == ScheduleSource("outage-data-ua", "kyiv-region", "5.2")
+    assert office.schedule is None
+
+
+def test_schedule_only_for_a_station(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("BLUETTI_STATIONS", "home,dacha")
+    monkeypatch.setenv("BLUETTI_HOME_SCHEDULE_PROVIDER", "yasno")
+    monkeypatch.setenv("BLUETTI_HOME_SCHEDULE_REGION", "kyiv")
+    monkeypatch.setenv("BLUETTI_HOME_SCHEDULE_GROUP", "35.1")
+    home, dacha = load_settings(_env_file=None).sites
+    assert home.schedule == ScheduleSource("yasno", "kyiv", "35.1")
+    assert dacha.schedule is None
+    monkeypatch.setenv("BLUETTI_DACHA_SCHEDULE_PROVIDER", "yasno")
+    with pytest.raises(ConfigError, match="BLUETTI_DACHA_SCHEDULE_REGION"):
+        load_settings(_env_file=None)
+
+
+def test_schedule_warn_minutes(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert load_settings(_env_file=None).sites[0].schedule_warn_minutes == (30,)
+    monkeypatch.setenv("SCHEDULE_WARN_MINUTES", "15, 60,15")
+    assert load_settings(_env_file=None).schedule_warn_minutes == [60, 15]
+    monkeypatch.setenv("SCHEDULE_WARN_MINUTES", "0")
+    assert load_settings(_env_file=None).sites[0].schedule_warn_minutes == ()
+    monkeypatch.setenv("SCHEDULE_WARN_MINUTES", "60,15")
+    monkeypatch.setenv("BLUETTI_STATIONS", "home,dacha")
+    monkeypatch.setenv("BLUETTI_DACHA_SCHEDULE_WARN_MINUTES", "120")
+    home, dacha = load_settings(_env_file=None).sites
+    assert (home.schedule_warn_minutes, dacha.schedule_warn_minutes) == ((60, 15), (120,))
+    monkeypatch.setenv("BLUETTI_DACHA_SCHEDULE_WARN_MINUTES", "soon")
+    with pytest.raises(ConfigError, match="BLUETTI_DACHA_SCHEDULE_WARN_MINUTES"):
+        load_settings(_env_file=None)
+    monkeypatch.setenv("BLUETTI_DACHA_SCHEDULE_WARN_MINUTES", "1000")
+    with pytest.raises(ConfigError, match="between 0 and 720"):
         load_settings(_env_file=None)
 
 
