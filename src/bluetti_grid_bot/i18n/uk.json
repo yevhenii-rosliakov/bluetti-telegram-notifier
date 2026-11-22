@@ -89,6 +89,7 @@
   "schedule_changed": "📅 Графік відключень змінився.",
   "schedule_warning": "⏰ Планове відключення через {minutes} хв: {slot} (черга {group})",
   "schedule_warning_low": "Станція заряджена слабо — майте на увазі.",
+  "schedule_warning_reminder": "🔌 Не забудьте вимкнути обігрівач, бойлер та інші потужні прилади.",
   "schedule_planned": "📅 За графіком: {slot}",
   "schedule_unplanned": "📅 Поза графіком",
   "cmd_stats": "Статистика відключень",

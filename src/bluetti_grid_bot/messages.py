@@ -484,6 +484,7 @@ class Formatter:
             lines.append(p + t("detail_soc", soc=_num(r.soc)))
             if r.soc < LOW_SOC_BEFORE_PLANNED:
                 lines.append(t("schedule_warning_low"))
+        lines.append(t("schedule_warning_reminder"))
         return "\n".join(lines)
 
     def schedule_match(self, schedule: Schedule, at: datetime, slack: timedelta) -> str | None:

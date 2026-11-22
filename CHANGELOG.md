@@ -7,6 +7,8 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- The warning before a planned outage reminds to switch off the heater, the boiler and
+  other power-hungry appliances.
 - Several warnings before a planned outage: `SCHEDULE_WARN_MINUTES=60,15`.
 - Outage schedule per station (`BLUETTI_<ID>_SCHEDULE_PROVIDER`, `_REGION`, `_GROUP`,
   `_WARN_MINUTES`; Helm:
