@@ -124,13 +124,13 @@ def test_time_uses_timezone_and_date_when_not_today() -> None:
 
 def test_grid_lost_message_uk() -> None:
     text = fmt("uk").event(GridLost(SN, at(32), None, 87.0, 120.0), at(33))
-    assert text == "⚡ Світло зникло о 14:32\nЗаряд: 87%\nНавантаження: 120 Вт"
+    assert text == "⚡ Світло зникло о 14:32\nЗаряд станції: 87%\nНавантаження: 120 Вт"
 
 
 def test_grid_restored_message_uk() -> None:
     ev = GridRestored(SN, at(125), None, at(32), None, 64.0)
     assert fmt("uk").event(ev, at(126)) == (
-        "✅ Світло з'явилося о 16:05, не було 1 год 33 хв\nЗаряд: 64%"
+        "✅ Світло з'явилося о 16:05, не було 1 год 33 хв\nЗаряд станції: 64%"
     )
 
 
