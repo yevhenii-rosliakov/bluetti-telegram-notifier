@@ -68,7 +68,7 @@ class Monitor:
         formatter: Formatter,
         metrics: Metrics,
         *,
-        schedule: ScheduleService | None = None,
+        schedules: Mapping[str, ScheduleService] | None = None,
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
         monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
@@ -79,7 +79,8 @@ class Monitor:
         self.sender = sender
         self.formatter = formatter
         self.metrics = metrics
-        self.schedule = schedule
+        # Site id -> its outage schedule; sites in the same queue share one service.
+        self.schedules = dict(schedules or {})
         self._now = now
         self._monotonic = monotonic
         self.stations: list[Station] = []
@@ -236,8 +237,10 @@ class Monitor:
         lines = self.formatter.runtime_hint(
             event.runtime_min, now - event.at, self._typical(event.sn, now)
         )
-        if self.schedule is not None and self.schedule.current is not None:
-            match = self.formatter.schedule_match(self.schedule.current, event.at, SCHEDULE_SLACK)
+        site = next((st.site for st in self.stations if st.sn == event.sn), "")
+        service = self.schedules.get(site)
+        if service is not None and service.current is not None:
+            match = self.formatter.schedule_match(service.current, event.at, SCHEDULE_SLACK)
             if match:
                 lines.append(match)
         return lines
@@ -270,13 +273,50 @@ class Monitor:
         outages = self.storage.outages_since(now - timedelta(days=2 * STATS_DAYS), sns)
         await self.sender.broadcast(self.formatter.weekly(self.stations, outages, now))
 
+    def _schedule_groups(self) -> list[tuple[ScheduleService, str, set[str]]]:
+        """Each distinct schedule with the sites using it and, when there are several
+        schedules, a label naming those sites."""
+        services = list({id(sv): sv for sv in self.schedules.values()}.values())
+        groups = []
+        for service in services:
+            sites = {sid for sid, sv in self.schedules.items() if sv is service}
+            groups.append((service, self._sites_label(sites) if len(services) > 1 else "", sites))
+        return groups
+
+    def _sites_label(self, sites: set[str]) -> str:
+        return ", ".join(self._site(sid).label for sid in sorted(sites))
+
+    def _warn_minutes(self, site: str) -> tuple[int, ...]:
+        if (s := self.sites.get(site)) is not None:
+            return s.schedule_warn_minutes
+        return tuple(self.settings.schedule_warn_minutes)
+
     async def _schedule_alerts(self, now: datetime) -> None:
-        if self.schedule is None or (schedule := self.schedule.current) is None:
-            return
+        groups = self._schedule_groups()
+        # Sites of one schedule may warn at different times: one warning per such set.
+        warn_groups = []
+        for service, _, sites in groups:
+            for warn in dict.fromkeys(self._warn_minutes(sid) for sid in sorted(sites)):
+                same = {sid for sid in sites if self._warn_minutes(sid) == warn}
+                warn_groups.append((service, warn, same))
+        for service, label, _ in groups:
+            if service.current is not None:
+                await self._schedule_published(service, label, now)
+        for service, warn, sites in warn_groups:
+            if service.current is not None and warn:
+                label = self._sites_label(sites) if len(warn_groups) > 1 else ""
+                await self._schedule_warning(service, warn, sites, label, now)
+
+    async def _schedule_published(
+        self, service: ScheduleService, label: str, now: datetime
+    ) -> None:
+        schedule = service.current
+        assert schedule is not None  # noqa: S101 - checked by the caller
         # A new day published (usually tomorrow's) or a published day changed.
         today = now.astimezone(KYIV).date().isoformat()
         prints = day_fingerprints(schedule)
-        stored = self.storage.get(_SCHEDULE_SEEN_KEY)
+        seen_key = scoped(_SCHEDULE_SEEN_KEY, service.key)
+        stored = self.storage.get(seen_key)
         seen: dict[str, str] = json.loads(stored) if stored else {}
         if stored is not None:
             for day, fingerprint in sorted(prints.items()):
@@ -284,25 +324,40 @@ class Monitor:
                     text = self.formatter.schedule_published(
                         schedule, date.fromisoformat(day), day in seen, now
                     )
-                    await self.sender.broadcast(text)
+                    await self.sender.broadcast(self.formatter.labelled(label, text))
         seen.update(prints)
-        self.storage.set(
-            _SCHEDULE_SEEN_KEY, json.dumps({d: f for d, f in seen.items() if d >= today})
-        )
+        self.storage.set(seen_key, json.dumps({d: f for d, f in seen.items() if d >= today}))
 
-        warn = timedelta(minutes=self.settings.schedule_warn_minutes)
+    async def _schedule_warning(
+        self,
+        service: ScheduleService,
+        warn: tuple[int, ...],
+        sites: set[str],
+        label: str,
+        now: datetime,
+    ) -> None:
+        schedule = service.current
+        assert schedule is not None  # noqa: S101 - checked by the caller
         slot = schedule.upcoming(now)
-        if not warn or slot is None or slot.start - now > warn:
+        if slot is None:
             return
-        if self.storage.get(_SCHEDULE_WARNED_KEY) == slot.start.isoformat():
+        due = [w for w in warn if slot.start - now <= timedelta(minutes=w)]
+        if not due:
             return
-        self.storage.set(_SCHEDULE_WARNED_KEY, slot.start.isoformat())
-        views = self.views()
+        # Warn once per due threshold; starting inside several (10 min before with
+        # "60,15") sends one warning, not one per threshold.
+        level = min(due)
+        key = scoped(_SCHEDULE_WARNED_KEY, f"{service.key}:{','.join(map(str, warn))}")
+        if (stored := self.storage.get(key)) is not None:
+            at, _, sent = stored.partition("|")
+            if at == slot.start.isoformat() and sent.isdigit() and int(sent) <= level:
+                return
+        self.storage.set(key, f"{slot.start.isoformat()}|{level}")
+        views = [v for v in self.views() if v.station.site in sites]
         if views and all(v.state.effective is GridState.BATTERY for v in views):
             return  # already without power
-        await self.sender.broadcast(
-            self.formatter.schedule_warning(slot, schedule.group, views, now)
-        )
+        text = self.formatter.schedule_warning(slot, schedule.group, views, now)
+        await self.sender.broadcast(self.formatter.labelled(label, text))
 
     def _update_metrics(self, st: Station, state: DeviceState) -> None:
         label = st.name
@@ -421,7 +476,7 @@ class Monitor:
             self._now(),
             "" in self.expired_sites,
             STATS_DAYS,
-            self.schedule.current if self.schedule is not None else None,
+            [(label, sv.current) for sv, label, _ in self._schedule_groups() if sv.current],
             expired_sites=[self._site(s) for s in sorted(self.expired_sites) if s],
         )
 
@@ -432,8 +487,12 @@ class Monitor:
         return self.formatter.stats_report(self.stations, outages, now, days)
 
     def schedule_text(self) -> str:
-        current = self.schedule.current if self.schedule is not None else None
-        return self.formatter.schedule(current, self._now())
+        now = self._now()
+        texts = [
+            self.formatter.labelled(label, self.formatter.schedule(sv.current, now))
+            for sv, label, _ in self._schedule_groups()
+        ]
+        return "\n\n".join(texts) or self.formatter.schedule(None, now)
 
     def history_text(self, limit: int) -> str:
         outages = self.storage.history(limit, [s.sn for s in self.stations] or None)

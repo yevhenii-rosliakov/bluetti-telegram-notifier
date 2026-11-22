@@ -211,6 +211,7 @@ class ScheduleClient:
         self._session = session
         self.provider = provider
         self.group = group
+        self.key = f"{provider}:{region}:{group}"
         if provider == "yasno":
             region_id, dso_id = YASNO_REGIONS[region]
             self.url = YASNO_URL.format(region=region_id, dso=dso_id)
@@ -242,8 +243,10 @@ class ScheduleService:
         self._client = client
         self._storage = storage
         self.group = client.group
+        self.key = client.key
+        self._storage_key = f"{_STORAGE_KEY}:{client.key}"
         self.current: Schedule | None = None
-        if (text := storage.get(_STORAGE_KEY)) is not None:
+        if (text := storage.get(self._storage_key)) is not None:
             with contextlib.suppress(KeyError, TypeError, ValueError):
                 stored = Schedule.from_json(text)
                 if stored.group == self.group:
@@ -253,10 +256,10 @@ class ScheduleService:
         try:
             schedule = await self._client.fetch()
         except ScheduleError as exc:
-            log.warning("Could not update the outage schedule: %s", exc)
+            log.warning("Could not update the outage schedule (%s): %s", self.key, exc)
             return
         self.current = schedule
-        self._storage.set(_STORAGE_KEY, schedule.to_json())
+        self._storage.set(self._storage_key, schedule.to_json())
 
     async def run(self, stop: asyncio.Event) -> None:
         while not stop.is_set():

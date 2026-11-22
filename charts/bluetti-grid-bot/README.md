@@ -313,8 +313,8 @@ can be added here, except the ones the chart sets itself (`STATE_DIR`, `HTTP_POR
 | `WEEKLY_SUMMARY` | `mon 09:00` | Weekday and time (in `TZ`) of the weekly summary; `off` disables. |
 | `SCHEDULE_PROVIDER` | `off` | `off`, `yasno` or `outage-data-ua`. |
 | `SCHEDULE_REGION` | — | `yasno`: `kyiv`, `dnipro-dnem`, `dnipro-cek`; `outage-data-ua`: `kyiv`, `kyiv-region`, `dnipro`, `odesa`. |
-| `SCHEDULE_GROUP` | — | Your queue, e.g. `3.1`. |
-| `SCHEDULE_WARN_MINUTES` | `30` | Warn this many minutes before a planned outage; `0` disables. |
+| `SCHEDULE_GROUP` | — | Your queue, e.g. `3.1`. Per station: `stations.<id>.schedule`. |
+| `SCHEDULE_WARN_MINUTES` | `30` | Minutes before a planned outage to warn at, e.g. `60,15`; `0` disables. Per station: `stations.<id>.schedule.warnMinutes`. |
 
 **Runtime**
 
@@ -398,6 +398,7 @@ stations:
 | `name` | `BLUETTI_<ID>_NAME` | ConfigMap |
 | `gateway` | `BLUETTI_<ID>_GATEWAY` | ConfigMap |
 | `deviceSns` | `BLUETTI_<ID>_DEVICE_SNS` | ConfigMap |
+| `schedule.provider`, `.region`, `.group`, `.warnMinutes` | `BLUETTI_<ID>_SCHEDULE_PROVIDER`, `_REGION`, `_GROUP`, `_WARN_MINUTES` | ConfigMap |
 | `refreshToken` | `BLUETTI_<ID>_REFRESH_TOKEN` | the chart's Secret |
 
 - Leave `config.BLUETTI_DEVICE_SNS` and `secrets.BLUETTI_REFRESH_TOKEN` empty; the chart

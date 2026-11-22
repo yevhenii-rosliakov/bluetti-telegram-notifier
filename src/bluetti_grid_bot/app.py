@@ -18,7 +18,7 @@ from aiogram.exceptions import TelegramAPIError, TelegramUnauthorizedError
 from . import __version__
 from .auth import AuthError, OAuthClient, TokenManager, extract_code
 from .cloud import BluettiCloud, CloudError, MultiStateSource, PollingStateSource, gateway_name
-from .config import ConfigError, Settings, Site
+from .config import ConfigError, ScheduleSource, Settings, Site
 from .detector import classify
 from .health import HealthServer, Metrics
 from .messages import Formatter, Translator
@@ -105,6 +105,7 @@ def _state_source(s: Settings, c: _Cloud) -> MultiStateSource:
                 sc.cloud,
                 sns=sc.site.device_sns,
                 names=s.bluetti_device_names,
+                site=sc.site.id,
                 site_name=sc.site.name,
             )
             for sc in c.sites
@@ -147,13 +148,16 @@ async def run_service(s: Settings) -> int:
         source = _state_source(s, c)
         bot = Bot(token=s.telegram_bot_token.get_secret_value())
         notifier = TelegramNotifier(bot, s.telegram_chat_ids, metrics)
-        schedule = None
-        if s.schedule_provider != "off":
-            client = ScheduleClient(
-                c.session, s.schedule_provider, s.schedule_region, s.schedule_group
-            )
-            schedule = ScheduleService(client, c.storage)
-        monitor = Monitor(s, c.storage, source, notifier, formatter, metrics, schedule=schedule)
+        # One service per distinct schedule: sites in the same queue share it.
+        services: dict[ScheduleSource, ScheduleService] = {}
+        schedules: dict[str, ScheduleService] = {}
+        for site in s.sites:
+            if (src := site.schedule) is not None:
+                if src not in services:
+                    client = ScheduleClient(c.session, src.provider, src.region, src.group)
+                    services[src] = ScheduleService(client, c.storage)
+                schedules[site.id] = services[src]
+        monitor = Monitor(s, c.storage, source, notifier, formatter, metrics, schedules=schedules)
         dp = build_dispatcher(monitor, s.allowed_chat_ids)
         health = HealthServer(
             s.http_port,
@@ -174,9 +178,10 @@ async def run_service(s: Settings) -> int:
         polling_task = asyncio.create_task(_telegram_polling(dp, bot, stop), name="telegram")
         stop_task = asyncio.create_task(stop.wait(), name="stop")
         # The schedule is optional: if its loop dies the bot keeps working without it.
-        schedule_task = (
-            asyncio.create_task(schedule.run(stop), name="schedule") if schedule else None
-        )
+        schedule_tasks = [
+            asyncio.create_task(service.run(stop), name=f"schedule {service.key}")
+            for service in services.values()
+        ]
         exit_code = 0
         try:
             done, _ = await asyncio.wait(
@@ -191,9 +196,7 @@ async def run_service(s: Settings) -> int:
             stop.set()
             with contextlib.suppress(RuntimeError):
                 await dp.stop_polling()
-            tasks = [monitor_task, polling_task, stop_task]
-            if schedule_task is not None:
-                tasks.append(schedule_task)
+            tasks = [monitor_task, polling_task, stop_task, *schedule_tasks]
             for task in tasks:
                 if not task.done():
                     task.cancel()

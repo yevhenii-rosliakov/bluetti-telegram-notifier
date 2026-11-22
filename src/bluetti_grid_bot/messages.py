@@ -231,19 +231,20 @@ class Formatter:
         now: datetime,
         auth_expired: bool,
         stats_days: int = 7,
-        schedule: Schedule | None = None,
+        schedules: Sequence[tuple[str, Schedule]] = (),
         expired_sites: Sequence[Site] = (),
     ) -> str:
         """``auth_expired``: the single-account login; ``expired_sites``: BLUETTI_STATIONS
-        entries whose login is invalid."""
+        entries whose login is invalid; ``schedules``: (label, schedule) pairs, see
+        ``labelled``."""
         t = self.t
         blocks = []
         if auth_expired:
             blocks.append(t("status_auth_expired"))
         for site in expired_sites:
             blocks.append(t("status_auth_expired_station", name=site.label, site=site.id))
-        if schedule is not None:
-            blocks.append(self._schedule_status(schedule, now))
+        for label, schedule in schedules:
+            blocks.append(self.labelled(label, self._schedule_status(schedule, now)))
         if not views:
             blocks.append(t("status_no_stations"))
         for v in views:
@@ -401,6 +402,10 @@ class Formatter:
         return "\n".join(lines)
 
     # schedule
+
+    def labelled(self, label: str, text: str) -> str:
+        """Prefix a schedule text with the stations it is for (when they differ)."""
+        return f"{self.t('status_title', name=label)}\n{text}" if label else text
 
     def _schedule_status(self, schedule: Schedule, now: datetime) -> str:
         t = self.t

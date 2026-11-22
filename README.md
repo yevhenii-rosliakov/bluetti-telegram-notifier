@@ -31,6 +31,11 @@ bot keeps the last schedule it got and keeps working without it.
 
 Schedule times are always Kyiv time; set `TZ=Europe/Kyiv` so the messages match.
 
+With [several stations](#several-stations-in-different-places) in different places, set the
+schedule per station with `BLUETTI_<ID>_SCHEDULE_PROVIDER`, `_REGION`, `_GROUP` and `_WARN_MINUTES`; each one
+defaults to the global `SCHEDULE_*` value, and `BLUETTI_<ID>_SCHEDULE_PROVIDER=off` turns it off
+for that station. Schedule messages then name the stations they are for.
+
 > **Unofficial API.** This project uses the same *unofficial* BLUETTI cloud API as the
 > community [Home Assistant integration](https://github.com/bluetti-community/bluetti-home-assistant)
 > (MIT) and `pybluetti`, including the integration's built-in public OAuth client. It is not
@@ -225,6 +230,7 @@ bot.
 | `BLUETTI_<ID>_REFRESH_TOKEN` | — | from `login --station <id>`; seeds the state like `BLUETTI_REFRESH_TOKEN` |
 | `BLUETTI_<ID>_GATEWAY` | `BLUETTI_GATEWAY` | `auto` / `eu` / `global` / `us` / URL |
 | `BLUETTI_<ID>_DEVICE_SNS` | all of that account | comma-separated serial numbers |
+| `BLUETTI_<ID>_SCHEDULE_PROVIDER` / `_REGION` / `_GROUP` / `_WARN_MINUTES` | `SCHEDULE_*` | the station's [outage schedule](#planned-outage-schedule) |
 | `BLUETTI_<ID>_ACCESS_TOKEN` | — | debugging only |
 
 Notes:
@@ -335,7 +341,7 @@ the bot at startup with a message naming the variable. See [.env.example](.env.e
 | `BLUETTI_GATEWAY_PROBE_ORDER` | `eu,global,us` | order for `auto` |
 | `BLUETTI_DEVICE_SNS` | empty = all | comma-separated serial numbers |
 | `BLUETTI_DEVICE_NAMES` | — | `SN1=Mom's flat,SN2=Garage`; shown when several stations are monitored |
-| `BLUETTI_STATIONS` | — | several stations with their own logins: `home,cottage`; then `BLUETTI_<ID>_NAME`, `_REFRESH_TOKEN`, `_GATEWAY`, `_DEVICE_SNS` per station, see [Several stations](#several-stations-in-different-places) |
+| `BLUETTI_STATIONS` | — | several stations with their own logins: `home,cottage`; then `BLUETTI_<ID>_NAME`, `_REFRESH_TOKEN`, `_GATEWAY`, `_DEVICE_SNS`, `_SCHEDULE_*` per station, see [Several stations](#several-stations-in-different-places) |
 | `BLUETTI_SSO_URL` | `https://sso.bluettipower.com` | |
 | `BLUETTI_CLIENT_ID` | `HomeAssistant` | HA integration's public client |
 | `BLUETTI_CLIENT_SECRET` | `SG9tZUFzc2lzdGFudA==` | sent as-is |
@@ -357,7 +363,7 @@ the bot at startup with a message naming the variable. See [.env.example](.env.e
 | `SCHEDULE_PROVIDER` | `off` | `off` / `yasno` / `outage-data-ua`, see [Planned outage schedule](#planned-outage-schedule) |
 | `SCHEDULE_REGION` | — | depends on the provider |
 | `SCHEDULE_GROUP` | — | your queue, e.g. `3.1` |
-| `SCHEDULE_WARN_MINUTES` | `30` | warn this long before a planned outage; `0` disables |
+| `SCHEDULE_WARN_MINUTES` | `30` | minutes before a planned outage to warn at; several warn several times (`60,15`); `0` disables |
 | `BOT_LANGUAGE` | `uk` | `uk` / `en` |
 | `TZ` | `UTC` | time zone for times in messages, e.g. `Europe/Kyiv` |
 | `STATE_DIR` | `/data` | tokens, state, history (SQLite) |

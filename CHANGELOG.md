@@ -7,6 +7,11 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- Several warnings before a planned outage: `SCHEDULE_WARN_MINUTES=60,15`.
+- Outage schedule per station (`BLUETTI_<ID>_SCHEDULE_PROVIDER`, `_REGION`, `_GROUP`,
+  `_WARN_MINUTES`; Helm:
+  `stations.<id>.schedule`), for stations in different places. Each defaults to the global
+  `SCHEDULE_*`; schedule messages name the stations when there are several schedules.
 - High load alert on battery, e.g. a heater left on when the power went out (`HIGH_LOAD_W`,
   default 1000 W; once per outage, after `DEBOUNCE_POLLS` polls).
 - `/status` shows outage statistics for the last 7 days: number of outages, total time

@@ -14,6 +14,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from bluetti_grid_bot.auth import AuthExpiredError
 from bluetti_grid_bot.cloud import CloudError
+from bluetti_grid_bot.config import Site
 from bluetti_grid_bot.health import HealthServer, Metrics
 from bluetti_grid_bot.messages import Formatter, Translator
 from bluetti_grid_bot.models import GridState, Sample, Station
@@ -323,11 +324,13 @@ async def test_metrics_disabled() -> None:
 # reports and schedule
 
 
-def with_schedule(m: Monitor, storage: Storage, schedule: Schedule) -> ScheduleService:
+def with_schedule(
+    m: Monitor, storage: Storage, schedule: Schedule, site: str = ""
+) -> ScheduleService:
     client = ScheduleClient(cast(aiohttp.ClientSession, None), "yasno", "kyiv", schedule.group)
     service = ScheduleService(client, storage)
     service.current = schedule
-    m.schedule = service
+    m.schedules[site] = service
     return service
 
 
@@ -383,6 +386,102 @@ async def test_schedule_warning_publication_and_planned_outage(
     assert sender.sent[-1].startswith("🔋 Battery is down to 40% (alert at 50%)")
     assert "Planned outage now: 12:20–13:20" in m.status_text()
     assert "Today, 20.11:\n• 12:20–13:20" in m.schedule_text()
+
+
+async def test_schedules_per_station(tmp_path: Path, storage: Storage) -> None:
+    m, src, sender, clock = make_monitor(tmp_path, storage, notify_startup=False)
+    src.stations = [
+        Station(SN, "PR200V2", "Home", site="home"),
+        Station("SN2", "AC180", "Dacha", site="dacha"),
+    ]
+    today = T0.date()
+    slot = Slot(T0 + timedelta(minutes=20), T0 + timedelta(minutes=80))
+    with_schedule(m, storage, Schedule("3.1", (slot,), (today,)), "home")
+    with_schedule(m, storage, Schedule("35.1", (), (today,)), "dacha")
+    await m.start()
+    grid = {SN: make_sample(grid=0, ac=0, soc=40), "SN2": make_sample(grid=0, ac=0, soc=90)}
+    await poll(m, src, clock, grid)
+    # Only the station in the queue with a planned outage is warned about.
+    assert sender.sent == [
+        "🏠 home\n⏰ Planned outage in 20 min: 12:20–13:20 (group 3.1)\nBattery: 40%\n"
+        "The battery is not charged much — keep that in mind."
+    ]
+    text = m.schedule_text()
+    assert "🏠 home\n📅 Outage schedule, group 3.1" in text
+    assert "🏠 dacha\n📅 Outage schedule, group 35.1" in text
+    status = m.status_text()
+    assert "🏠 home\n📅 Next planned outage: 12:20–13:20 (group 3.1)" in status
+    assert "🏠 dacha\n📅 No more planned outages" in status
+
+    # An outage at the dacha is matched against the dacha's schedule.
+    battery = {SN: make_sample(grid=0, ac=0, soc=40), "SN2": make_sample(grid=0, ac=80, soc=90)}
+    await poll(m, src, clock, battery)
+    await poll(m, src, clock, battery)
+    assert sender.sent[-1].startswith("⚡ [Dacha] Power went out")
+    assert sender.sent[-1].endswith("📅 Not on the schedule")
+
+
+async def test_schedule_warns_at_each_threshold(tmp_path: Path, storage: Storage) -> None:
+    m, src, sender, clock = make_monitor(
+        tmp_path, storage, notify_startup=False, schedule_warn_minutes="60,15"
+    )
+    slot = Slot(T0 + timedelta(minutes=70), T0 + timedelta(minutes=130))
+    with_schedule(m, storage, Schedule("3.1", (slot,), (T0.date(),)))
+    await m.start()
+    grid = {SN: make_sample(grid=0, ac=0, soc=90)}
+    await poll(m, src, clock, grid)
+    assert sender.sent == []
+    clock.now = slot.start - timedelta(minutes=60)
+    await poll(m, src, clock, grid)
+    await poll(m, src, clock, grid)
+    assert [t.splitlines()[0] for t in sender.sent] == [
+        "⏰ Planned outage in 60 min: 13:10–14:10 (group 3.1)"
+    ]
+    clock.now = slot.start - timedelta(minutes=15)
+    await poll(m, src, clock, grid)
+    await poll(m, src, clock, grid)
+    assert sender.sent[-1].startswith("⏰ Planned outage in 15 min")
+    assert len(sender.sent) == 2
+
+
+async def test_schedule_warning_once_when_starting_late(tmp_path: Path, storage: Storage) -> None:
+    m, src, sender, clock = make_monitor(
+        tmp_path, storage, notify_startup=False, schedule_warn_minutes="60,15"
+    )
+    slot = Slot(T0 + timedelta(minutes=10), T0 + timedelta(minutes=70))
+    with_schedule(m, storage, Schedule("3.1", (slot,), (T0.date(),)))
+    await m.start()
+    grid = {SN: make_sample(grid=0, ac=0, soc=90)}
+    await poll(m, src, clock, grid)
+    await poll(m, src, clock, grid)
+    assert [t.splitlines()[0] for t in sender.sent] == [
+        "⏰ Planned outage in 10 min: 12:10–13:10 (group 3.1)"
+    ]
+
+
+async def test_schedule_warn_minutes_per_station(tmp_path: Path, storage: Storage) -> None:
+    m, src, sender, clock = make_monitor(tmp_path, storage, notify_startup=False)
+    m.sites = {
+        "home": Site("home", "Home", schedule_warn_minutes=(30,)),
+        "dacha": Site("dacha", "Dacha", schedule_warn_minutes=(60,)),
+    }
+    src.stations = [
+        Station(SN, "PR200V2", "Home", site="home"),
+        Station("SN2", "AC180", "Dacha", site="dacha"),
+    ]
+    slot = Slot(T0 + timedelta(minutes=50), T0 + timedelta(minutes=110))
+    service = with_schedule(m, storage, Schedule("3.1", (slot,), (T0.date(),)), "home")
+    m.schedules["dacha"] = service  # the same queue
+    await m.start()
+    grid = {SN: make_sample(grid=0, ac=0, soc=40), "SN2": make_sample(grid=0, ac=0, soc=90)}
+    await poll(m, src, clock, grid)
+    assert sender.sent == [
+        "🏠 Dacha\n⏰ Planned outage in 50 min: 12:50–13:50 (group 3.1)\nBattery: 90%"
+    ]
+    clock.now = slot.start - timedelta(minutes=30)
+    await poll(m, src, clock, grid)
+    assert sender.sent[-1].startswith("🏠 Home\n⏰ Planned outage in 30 min")
+    assert len(sender.sent) == 2
 
 
 async def test_grid_lost_shows_typical_outage(tmp_path: Path, storage: Storage) -> None:

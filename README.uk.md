@@ -31,6 +31,11 @@ Telegram-бот, який повідомляє, коли **світло зник
 
 Час у графіках завжди київський; задайте `TZ=Europe/Kyiv`, щоб повідомлення збігалися.
 
+Якщо [станцій кілька](#кілька-станцій-у-різних-місцях) і вони в різних місцях, задайте графік для
+кожної: `BLUETTI_<ID>_SCHEDULE_PROVIDER`, `_REGION`, `_GROUP` і `_WARN_MINUTES`; кожна з них типово береться з
+глобальної `SCHEDULE_*`, а `BLUETTI_<ID>_SCHEDULE_PROVIDER=off` вимикає графік для цієї станції.
+Тоді повідомлення про графік називають станції, яких він стосується.
+
 > **Неофіційний API.** Проєкт використовує той самий *неофіційний* хмарний API BLUETTI, що й
 > спільнотна [інтеграція для Home Assistant](https://github.com/bluetti-community/bluetti-home-assistant)
 > (MIT) та `pybluetti`, разом із вбудованим публічним OAuth-клієнтом інтеграції. BLUETTI його
@@ -206,6 +211,7 @@ BLUETTI_COTTAGE_DEVICE_SNS=AC180XXXXXXXXXXXXXXX
 | `BLUETTI_<ID>_REFRESH_TOKEN` | — | з `login --station <id>`; заповнює стан так само, як `BLUETTI_REFRESH_TOKEN` |
 | `BLUETTI_<ID>_GATEWAY` | `BLUETTI_GATEWAY` | `auto` / `eu` / `global` / `us` / URL |
 | `BLUETTI_<ID>_DEVICE_SNS` | усі станції акаунта | серійні номери через кому |
+| `BLUETTI_<ID>_SCHEDULE_PROVIDER` / `_REGION` / `_GROUP` / `_WARN_MINUTES` | `SCHEDULE_*` | [графік відключень](#графік-відключень) цієї станції |
 | `BLUETTI_<ID>_ACCESS_TOKEN` | — | лише для налагодження |
 
 Примітки:
@@ -338,7 +344,7 @@ docker compose run --rm bot check
 | `SCHEDULE_PROVIDER` | `off` | `off` / `yasno` / `outage-data-ua`, див. [Графік відключень](#графік-відключень) |
 | `SCHEDULE_REGION` | — | залежить від джерела |
 | `SCHEDULE_GROUP` | — | ваша черга, напр. `3.1` |
-| `SCHEDULE_WARN_MINUTES` | `30` | попереджати за стільки хвилин до планового відключення; `0` — вимкнено |
+| `SCHEDULE_WARN_MINUTES` | `30` | за скільки хвилин до планового відключення попереджати; кілька значень — кілька попереджень (`60,15`); `0` — вимкнено |
 | `BOT_LANGUAGE` | `uk` | `uk` / `en` |
 | `TZ` | `UTC` | часовий пояс для повідомлень, напр. `Europe/Kyiv` |
 | `STATE_DIR` | `/data` | токени, стан, історія (SQLite) |

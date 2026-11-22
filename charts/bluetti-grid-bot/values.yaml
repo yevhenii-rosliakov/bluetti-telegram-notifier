@@ -40,6 +40,7 @@ config:
   SCHEDULE_PROVIDER: "off"
   SCHEDULE_REGION: ""
   SCHEDULE_GROUP: ""
+  # Minutes before a planned outage to warn at, e.g. "60,15"; "0" disables.
   SCHEDULE_WARN_MINUTES: "30"
   BOT_LANGUAGE: uk
   TZ: UTC
@@ -57,6 +58,11 @@ stations: {}
 #    gateway: eu                       # default: config.BLUETTI_GATEWAY
 #    deviceSns: PR200V2XXXXXXXXXXXXXX  # string or list; empty = all stations of the account
 #    refreshToken: ""                  # from `login --station home`; may stay empty
+#    schedule:                         # default: config.SCHEDULE_*; provider: off disables
+#      provider: yasno
+#      region: kyiv
+#      group: "35.1"
+#      warnMinutes: [60, 15]           # default: config.SCHEDULE_WARN_MINUTES; 0 disables
 #  cottage:
 #    name: Cottage
 #    deviceSns: [AC180XXXXXXXXXXXXXXX]
