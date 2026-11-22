@@ -239,7 +239,10 @@ def test_schedule_texts() -> None:
 def test_schedule_warning_text() -> None:
     slot = Slot(at(30), at(90))
     text = fmt().schedule_warning(slot, "3.1", [], at(0))
-    assert text == "⏰ Planned outage in 30 min: 14:30–15:30 (group 3.1)"
+    assert text == (
+        "⏰ Planned outage in 30 min: 14:30–15:30 (group 3.1)\n"
+        "🔌 Don't forget to switch off the heater, the boiler and other power-hungry appliances."
+    )
 
 
 # config

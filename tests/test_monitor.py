@@ -367,7 +367,8 @@ async def test_schedule_warning_publication_and_planned_outage(
     # Today's schedule seen for the first time: no "published" message, but a warning.
     assert sender.sent == [
         "⏰ Planned outage in 20 min: 12:20–13:20 (group 3.1)\nBattery: 40%\n"
-        "The battery is not charged much — keep that in mind."
+        "The battery is not charged much — keep that in mind.\n"
+        "🔌 Don't forget to switch off the heater, the boiler and other power-hungry appliances."
     ]
     await poll(m, src, clock, grid)
     assert len(sender.sent) == 1  # warned once per slot
@@ -404,7 +405,8 @@ async def test_schedules_per_station(tmp_path: Path, storage: Storage) -> None:
     # Only the station in the queue with a planned outage is warned about.
     assert sender.sent == [
         "🏠 home\n⏰ Planned outage in 20 min: 12:20–13:20 (group 3.1)\nBattery: 40%\n"
-        "The battery is not charged much — keep that in mind."
+        "The battery is not charged much — keep that in mind.\n"
+        "🔌 Don't forget to switch off the heater, the boiler and other power-hungry appliances."
     ]
     text = m.schedule_text()
     assert "🏠 home\n📅 Outage schedule, group 3.1" in text
@@ -476,7 +478,8 @@ async def test_schedule_warn_minutes_per_station(tmp_path: Path, storage: Storag
     grid = {SN: make_sample(grid=0, ac=0, soc=40), "SN2": make_sample(grid=0, ac=0, soc=90)}
     await poll(m, src, clock, grid)
     assert sender.sent == [
-        "🏠 Dacha\n⏰ Planned outage in 50 min: 12:50–13:50 (group 3.1)\nBattery: 90%"
+        "🏠 Dacha\n⏰ Planned outage in 50 min: 12:50–13:50 (group 3.1)\nBattery: 90%\n"
+        "🔌 Don't forget to switch off the heater, the boiler and other power-hungry appliances."
     ]
     clock.now = slot.start - timedelta(minutes=30)
     await poll(m, src, clock, grid)

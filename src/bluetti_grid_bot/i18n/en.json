@@ -89,6 +89,7 @@
   "schedule_changed": "📅 The outage schedule has changed.",
   "schedule_warning": "⏰ Planned outage in {minutes} min: {slot} (group {group})",
   "schedule_warning_low": "The battery is not charged much — keep that in mind.",
+  "schedule_warning_reminder": "🔌 Don't forget to switch off the heater, the boiler and other power-hungry appliances.",
   "schedule_planned": "📅 On the schedule: {slot}",
   "schedule_unplanned": "📅 Not on the schedule",
   "cmd_stats": "Outage statistics",
