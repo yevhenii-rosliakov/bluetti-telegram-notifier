@@ -164,6 +164,26 @@ async def test_authorization_header_has_no_bearer_prefix(
     assert request.kwargs["headers"]["Authorization"] == "ACCESS"
 
 
+async def test_debug_logs_request_and_response_bodies(
+    session: aiohttp.ClientSession, storage: Storage, caplog: pytest.LogCaptureFixture
+) -> None:
+    cloud = make_cloud(session, storage, gateway=EU)
+    caplog.set_level("DEBUG", logger="bluetti_grid_bot.cloud")
+    with aioresponses() as m:
+        m.post(EU + BIND_PATH, payload=ok(None))
+        await cloud.bind([SN])
+    lines = [r.getMessage() for r in caplog.records]
+    assert f'BLUETTI request: POST {EU + BIND_PATH} params=None body={{"bindSnList":["{SN}"]}}' in (
+        lines
+    )
+    assert any(
+        line.startswith(f"BLUETTI response: POST {EU + BIND_PATH} HTTP 200 ")
+        and '"msgCode":0' in line
+        for line in lines
+    )
+    assert not any("ACCESS" in line for line in lines)
+
+
 async def test_805_refreshes_and_retries_once(
     session: aiohttp.ClientSession, storage: Storage
 ) -> None:
