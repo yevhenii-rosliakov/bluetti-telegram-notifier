@@ -15,7 +15,7 @@ from typing import Protocol
 from .auth import AuthError, AuthExpiredError
 from .cloud import CloudError, StateSource
 from .config import Settings, Site
-from .detector import DeviceState, evaluate
+from .detector import DeviceState, evaluate, implausible
 from .events import (
     BotStartedOnBattery,
     BotStartedOnGrid,
@@ -188,7 +188,9 @@ class Monitor:
                     )
         result = evaluate(self.states[st.sn], sample, self.cfg, now)
         self.states[st.sn] = result.state
-        has_data = sample is not None and sample.has_data
+        if result.suspect is not None:
+            log.warning("%s: implausible answer skipped (%s)", st.sn, result.suspect)
+        has_data = sample is not None and sample.has_data and result.suspect is None
         if has_data:
             assert sample is not None  # noqa: S101 - narrowed by has_data
             self.readings[st.sn] = sample.reading
@@ -464,6 +466,8 @@ class Monitor:
             if sample is None:
                 continue
             self.online[st.sn] = sample.online
+            if implausible(sample.reading) is not None:
+                continue
             if sample.has_data:
                 self.readings[st.sn] = sample.reading
                 self.last_data[st.sn] = now

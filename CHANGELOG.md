@@ -36,6 +36,9 @@ All notable changes to this project are documented here. The format follows
   them as a `stations` map (`name`, `gateway`, `deviceSns`, `refreshToken` per station).
 
 ### Changed
+- A cloud answer showing the station online at 0 % with every power reading at 0 is
+  skipped (logged as a warning) until it repeats in 3 polls in a row. Such one-off answers
+  caused false "battery at 0 %" and "AC output off" alerts.
 - `LOW_SOC_THRESHOLDS` defaults to `50,25` (was `30,15`).
 
 ## [0.1.0] - 2026-11-20

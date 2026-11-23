@@ -6,7 +6,13 @@ from datetime import timedelta
 
 import pytest
 
-from bluetti_grid_bot.detector import DetectorConfig, DeviceState, classify, evaluate
+from bluetti_grid_bot.detector import (
+    DetectorConfig,
+    DeviceState,
+    classify,
+    evaluate,
+    implausible,
+)
 from bluetti_grid_bot.events import (
     AcOutputOff,
     BatteryFull,
@@ -449,6 +455,51 @@ def test_ac_off_alert_can_be_disabled() -> None:
 def test_ac_unknown_value_does_not_alert() -> None:
     _, events = run(ATS, [make_sample(ac_on=None), make_sample(ac_on="x"), make_sample(ac_on="x")])
     assert "AcOutputOff" not in kinds(events)
+
+
+# implausible cloud answers
+
+# Real answer from 2026-11-23 15:25: between two normal polls at 85 % on battery.
+GLITCH = make_sample(
+    grid=0,
+    ac=0,
+    soc=0,
+    ac_on="0",
+    DsgFullTime="0",
+    PVAllTotalPower="0",
+    SetCtrlWorkMode="workmode_3",
+)
+ON_BATTERY_85 = make_sample(grid=0, ac=147, soc=85, DsgFullTime="1306")
+
+
+def test_glitch_between_normal_polls_is_skipped() -> None:
+    cfg = replace(ATS, debounce_polls=1)
+    s = baseline(cfg, ON_BATTERY_85)
+    s, events = run(cfg, [ON_BATTERY_85, GLITCH, ON_BATTERY_85, ON_BATTERY_85], s, start=1)
+    assert events == []
+    assert s.power is GridState.BATTERY
+    assert s.suspect_count == 0
+
+
+def test_glitch_result_names_the_reason() -> None:
+    s = baseline(ATS, ON_BATTERY_85)
+    result = evaluate(s, GLITCH, ATS, at(1))
+    assert result.suspect is not None
+    assert result.events == []
+    assert result.observed is None
+
+
+def test_implausible_answer_accepted_once_it_repeats() -> None:
+    s = baseline(ATS, ON_BATTERY_85)
+    s, events = run(ATS, [GLITCH] * 4, s, start=1)
+    assert [m for m, e in events if isinstance(e, AcOutputOff)] == [4]
+    assert s.power is GridState.GRID
+
+
+def test_real_empty_station_is_not_implausible() -> None:
+    assert implausible(Reading(soc=0, grid_w=300)) is None  # charging from empty
+    assert implausible(Reading(soc=0, ac_load_w=40)) is None
+    assert implausible(Reading(soc=5)) is None
 
 
 # robustness / persistence
