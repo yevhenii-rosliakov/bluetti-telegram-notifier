@@ -40,6 +40,9 @@ All notable changes to this project are documented here. The format follows
   not a reading: it counts as "no data" (even with `online` 1), so a long stretch of it
   ends in "station offline" after `OFFLINE_GRACE_SECONDS`. Such answers caused false
   "battery at 0 %", "power is back" and "AC output off" alerts.
+- With `NOTIFY_STARTUP=false`, a restart during an outage that was already reported is
+  silent too. "Bot started on battery" is still sent when the outage began while the bot
+  was down.
 - `LOW_SOC_THRESHOLDS` defaults to `50,25` (was `30,15`).
 
 ## [0.1.0] - 2026-11-20

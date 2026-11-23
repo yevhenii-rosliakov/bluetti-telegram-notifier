@@ -227,6 +227,9 @@ class Monitor:
                     None if event.since_known else (state.power_since_earliest or event.since)
                 )
                 self.storage.start_outage(event.sn, event.since, earliest)
+                # Restarted during an outage that was already reported: nothing new to say.
+                if event.since_known and not self.settings.notify_startup:
+                    return
             case GridRestored():
                 self.storage.end_outage(event.sn, event.at, event.earliest)
             case OutageEndedUnobserved():

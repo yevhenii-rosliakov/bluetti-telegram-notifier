@@ -301,7 +301,8 @@ Also fits any setup where nothing is plugged into the station while the grid is 
   sometimes with `online` 1). It counts as no data, like an offline station.
 - The first poll after startup sets a baseline. If the station is on battery the bot says so
   ("Bot started: the station is currently on battery…"); otherwise "Bot started: grid power
-  is present" (set `NOTIFY_STARTUP=false` to stay silent).
+  is present" (set `NOTIFY_STARTUP=false` to stay silent; then a restart during an outage
+  that was already reported is silent too).
 - If the station goes offline and comes back in a different state, the message says
   "between 14:30 and 15:10 (exact time unknown)".
 
@@ -360,7 +361,7 @@ the bot at startup with a message naming the variable. See [.env.example](.env.e
 | `LOW_SOC_THRESHOLDS` | `50,25` | empty disables |
 | `HIGH_LOAD_W` | `1000` | on battery, alert when the load stays at or above this, once per outage; `0` disables |
 | `ALERT_AC_OFF` | `true` | |
-| `NOTIFY_STARTUP` | `true` | "Bot started" message when the grid is present |
+| `NOTIFY_STARTUP` | `true` | "Bot started" message when the grid is present, or on battery during an outage already reported |
 | `FULL_CHARGE_SOC` | `100` | "battery charged" after an outage at this %; `0` disables |
 | `WEEKLY_SUMMARY` | `mon 09:00` | weekday and time (in `TZ`) of the weekly summary; `off` disables |
 | `SCHEDULE_PROVIDER` | `off` | `off` / `yasno` / `outage-data-ua`, see [Planned outage schedule](#planned-outage-schedule) |
