@@ -296,9 +296,9 @@ Also fits any setup where nothing is plugged into the station while the grid is 
 
 - A new state must be seen in `DEBOUNCE_POLLS` consecutive polls (restoration:
   `RESTORE_DEBOUNCE_POLLS`). The reported time is the **first** poll that saw it.
-- An answer that says the station is online at 0 % with every power reading at 0 is a
-  broken cloud snapshot, not a reading: it is skipped (a warning in the log) until it
-  repeats in 3 polls in a row.
+- An answer with SOC 0 % and every power reading at 0 is the cloud's placeholder, not a
+  reading (it comes once between normal polls, or while the station is out of touch,
+  sometimes with `online` 1). It counts as no data, like an offline station.
 - The first poll after startup sets a baseline. If the station is on battery the bot says so
   ("Bot started: the station is currently on battery…"); otherwise "Bot started: grid power
   is present" (set `NOTIFY_STARTUP=false` to stay silent).

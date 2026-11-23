@@ -113,8 +113,21 @@ class Sample:
         return cls(sn=sn, online=online, raw=dict(raw), reading=reading, invalid_fields=invalid)
 
     @property
+    def placeholder(self) -> bool:
+        """The cloud's stand-in for a station it has no fresh data for.
+
+        SOC 0 %, every power and the battery runtime 0 (and AC off, another working mode),
+        sometimes with ``online`` still "1": for a single poll between normal ones, or for
+        as long as the station is out of touch. A station really at 0 % with nothing coming
+        in has switched itself off and does not answer at all.
+        """
+        r = self.reading
+        powers = (r.grid_w, r.ac_load_w, r.dc_load_w, r.pv_w)
+        return r.soc == 0 and not any(powers) and not r.dsg_minutes
+
+    @property
     def has_data(self) -> bool:
-        return self.online and bool(self.raw)
+        return self.online and bool(self.raw) and not self.placeholder
 
 
 @dataclass(frozen=True, slots=True)

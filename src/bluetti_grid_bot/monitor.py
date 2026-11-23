@@ -15,7 +15,7 @@ from typing import Protocol
 from .auth import AuthError, AuthExpiredError
 from .cloud import CloudError, StateSource
 from .config import Settings, Site
-from .detector import DeviceState, evaluate, implausible
+from .detector import DeviceState, evaluate
 from .events import (
     BotStartedOnBattery,
     BotStartedOnGrid,
@@ -98,6 +98,8 @@ class Monitor:
         self._heartbeat = monotonic()
         self._started = monotonic()
         self._warned_fields: set[tuple[str, str]] = set()
+        # Stations whose last answer was the cloud's placeholder (logged once per stretch).
+        self._placeholder: set[str] = set()
         # One cloud request at a time: the polling loop and /status share the source.
         self._fetch_lock = asyncio.Lock()
         self._last_refresh: float | None = None
@@ -177,7 +179,13 @@ class Monitor:
 
     async def _process(self, st: Station, sample: Sample | None, now: datetime) -> None:
         if sample is not None:
-            self.online[st.sn] = sample.online
+            self.online[st.sn] = sample.online and not sample.placeholder
+            if sample.placeholder and st.sn not in self._placeholder:
+                log.warning("%s: placeholder answer (SOC 0 %%, every power 0); no data", st.sn)
+            if sample.placeholder:
+                self._placeholder.add(st.sn)
+            else:
+                self._placeholder.discard(st.sn)
             for field in sample.invalid_fields:
                 if (st.sn, field) not in self._warned_fields:
                     self._warned_fields.add((st.sn, field))
@@ -188,9 +196,7 @@ class Monitor:
                     )
         result = evaluate(self.states[st.sn], sample, self.cfg, now)
         self.states[st.sn] = result.state
-        if result.suspect is not None:
-            log.warning("%s: implausible answer skipped (%s)", st.sn, result.suspect)
-        has_data = sample is not None and sample.has_data and result.suspect is None
+        has_data = sample is not None and sample.has_data
         if has_data:
             assert sample is not None  # noqa: S101 - narrowed by has_data
             self.readings[st.sn] = sample.reading
@@ -465,9 +471,7 @@ class Monitor:
             sample = samples.get(st.sn)
             if sample is None:
                 continue
-            self.online[st.sn] = sample.online
-            if implausible(sample.reading) is not None:
-                continue
+            self.online[st.sn] = sample.online and not sample.placeholder
             if sample.has_data:
                 self.readings[st.sn] = sample.reading
                 self.last_data[st.sn] = now

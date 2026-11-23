@@ -27,11 +27,6 @@ from .events import (
 )
 from .models import DetectionMode, GridState, Reading, Sample
 
-# The cloud sometimes answers with a broken snapshot (SOC 0 %, AC switch off, every power
-# 0, a different working mode) and the real values again on the next poll. An answer that
-# looks like that is skipped until it repeats this many polls in a row.
-SUSPECT_CONFIRM_POLLS = 3
-
 
 @dataclass(frozen=True, slots=True)
 class DetectorConfig:
@@ -84,8 +79,6 @@ class DeviceState:
     charging_since: datetime | None = None
     # passthrough mode: SOC at the last poll that showed grid input.
     soc_at_grid: float | None = None
-    # Implausible answers seen in a row (see ``implausible``).
-    suspect_count: int = 0
 
     @property
     def effective(self) -> GridState:
@@ -144,24 +137,10 @@ class Result:
     state: DeviceState
     events: list[Event] = field(default_factory=list)
     observed: Classification | None = None
-    # Why this poll was skipped as implausible; nothing else changed then.
-    suspect: str | None = None
 
 
 def _fmt(value: float) -> str:
     return f"{value:g}"
-
-
-def implausible(reading: Reading) -> str | None:
-    """Why this reading looks like a broken cloud answer, or ``None`` if it looks real.
-
-    A station that really is at 0 % with nothing coming in has switched itself off and stops
-    answering, so "online, 0 %, every power 0" is the cloud's placeholder, not a reading.
-    """
-    powers = (reading.grid_w, reading.ac_load_w, reading.dc_load_w, reading.pv_w)
-    if reading.soc == 0 and not any(powers) and not reading.dsg_minutes:
-        return "SOC 0 % with every power reading 0"
-    return None
 
 
 def classify(reading: Reading, cfg: DetectorConfig, soc_at_grid: float | None) -> Classification:
@@ -376,8 +355,8 @@ def evaluate(
 
     ``sample`` is ``None`` when the poll failed. A sample with ``online == False`` or an
     empty ``stateList`` counts as "no data" too: the state becomes UNKNOWN, never
-    "grid lost" or "grid restored". An implausible sample (see ``implausible``) is skipped
-    until it repeats ``SUSPECT_CONFIRM_POLLS`` times in a row.
+    "grid lost" or "grid restored". So does the cloud's placeholder answer
+    (``Sample.placeholder``).
     """
     s = dataclasses.replace(prev)
     events: list[Event] = []
@@ -391,14 +370,6 @@ def evaluate(
             events.append(StationOffline(s.sn, s.unreachable_since, s.last_seen_at))
         return Result(s, events)
 
-    reading = sample.reading
-    if (reason := implausible(reading)) is None:
-        s.suspect_count = 0
-    else:
-        s.suspect_count += 1
-        if s.suspect_count < SUSPECT_CONFIRM_POLLS:
-            return Result(s, suspect=reason)
-
     prev_seen = s.last_seen_at
     if s.unreachable_since is not None:
         if s.offline_notified:
@@ -408,6 +379,7 @@ def evaluate(
         s.offline_notified = False
     s.last_seen_at = now
 
+    reading = sample.reading
     observed = classify(reading, cfg, s.soc_at_grid)
     if observed.state is GridState.GRID and reading.soc is not None:
         s.soc_at_grid = reading.soc

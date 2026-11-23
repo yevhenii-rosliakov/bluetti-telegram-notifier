@@ -6,13 +6,7 @@ from datetime import timedelta
 
 import pytest
 
-from bluetti_grid_bot.detector import (
-    DetectorConfig,
-    DeviceState,
-    classify,
-    evaluate,
-    implausible,
-)
+from bluetti_grid_bot.detector import DetectorConfig, DeviceState, classify, evaluate
 from bluetti_grid_bot.events import (
     AcOutputOff,
     BatteryFull,
@@ -457,10 +451,11 @@ def test_ac_unknown_value_does_not_alert() -> None:
     assert "AcOutputOff" not in kinds(events)
 
 
-# implausible cloud answers
+# the cloud's placeholder answer
 
-# Real answer from 2026-11-23 15:25: between two normal polls at 85 % on battery.
-GLITCH = make_sample(
+# Real answer from 2026-11-23: once at 15:25 between two normal polls at 85 % on battery,
+# and from 15:52 on every poll (first with online=0, then with online=1).
+PLACEHOLDER = make_sample(
     grid=0,
     ac=0,
     soc=0,
@@ -472,34 +467,36 @@ GLITCH = make_sample(
 ON_BATTERY_85 = make_sample(grid=0, ac=147, soc=85, DsgFullTime="1306")
 
 
-def test_glitch_between_normal_polls_is_skipped() -> None:
+def test_placeholder_between_normal_polls_changes_nothing() -> None:
     cfg = replace(ATS, debounce_polls=1)
     s = baseline(cfg, ON_BATTERY_85)
-    s, events = run(cfg, [ON_BATTERY_85, GLITCH, ON_BATTERY_85, ON_BATTERY_85], s, start=1)
+    s, events = run(cfg, [ON_BATTERY_85, PLACEHOLDER, ON_BATTERY_85, ON_BATTERY_85], s, start=1)
     assert events == []
     assert s.power is GridState.BATTERY
-    assert s.suspect_count == 0
 
 
-def test_glitch_result_names_the_reason() -> None:
+def test_lasting_placeholder_is_offline_not_restored() -> None:
     s = baseline(ATS, ON_BATTERY_85)
-    result = evaluate(s, GLITCH, ATS, at(1))
-    assert result.suspect is not None
-    assert result.events == []
-    assert result.observed is None
+    s, events = run(ATS, [PLACEHOLDER] * 15, s, start=1)
+    assert kinds(events) == ["StationOffline"]
+    assert s.power is GridState.BATTERY
+    assert s.effective is GridState.UNKNOWN
+
+    s, events = run(ATS, [ON_BATTERY_85, ON_BATTERY_85], s, start=16)
+    assert kinds(events) == ["StationOnline"]
+    assert s.power is GridState.BATTERY
 
 
-def test_implausible_answer_accepted_once_it_repeats() -> None:
-    s = baseline(ATS, ON_BATTERY_85)
-    s, events = run(ATS, [GLITCH] * 4, s, start=1)
-    assert [m for m, e in events if isinstance(e, AcOutputOff)] == [4]
-    assert s.power is GridState.GRID
+def test_placeholder_has_no_data() -> None:
+    assert PLACEHOLDER.placeholder
+    assert not PLACEHOLDER.has_data
+    assert not make_sample(grid=0, ac=0, soc=0).has_data  # fields missing count as 0
 
 
-def test_real_empty_station_is_not_implausible() -> None:
-    assert implausible(Reading(soc=0, grid_w=300)) is None  # charging from empty
-    assert implausible(Reading(soc=0, ac_load_w=40)) is None
-    assert implausible(Reading(soc=5)) is None
+def test_real_empty_station_is_not_a_placeholder() -> None:
+    assert make_sample(grid=300, ac=0, soc=0).has_data  # charging from empty
+    assert make_sample(grid=0, ac=40, soc=0).has_data
+    assert make_sample(grid=0, ac=0, soc=5).has_data
 
 
 # robustness / persistence
