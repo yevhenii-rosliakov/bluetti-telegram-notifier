@@ -129,6 +129,25 @@ async def test_notify_startup_can_be_disabled(tmp_path: Path, storage: Storage) 
     assert sender.sent == []
 
 
+async def test_notify_startup_disabled_skips_restart_during_reported_outage(
+    tmp_path: Path, storage: Storage
+) -> None:
+    m, src, sender, clock = make_monitor(tmp_path, storage, notify_startup=False)
+    await m.start()
+    battery = {SN: make_sample(grid=0, ac=80, soc=95)}
+    await poll(m, src, clock, battery)
+    # Found on battery at the first start: the outage was not reported yet.
+    assert sender.sent[0].startswith("🔋 Bot started: the station is currently on battery")
+
+    m2, src2, sender2, clock2 = make_monitor(tmp_path, storage, notify_startup=False)
+    clock2.now = clock.now + timedelta(minutes=30)
+    await m2.start()
+    await poll(m2, src2, clock2, battery)
+    assert sender2.sent == []
+    (outage,) = storage.history(10)
+    assert outage.end is None
+
+
 async def test_failed_polls_lead_to_offline_not_outage(tmp_path: Path, storage: Storage) -> None:
     m, src, sender, clock = make_monitor(tmp_path, storage, offline_grace_seconds=120)
     await m.start()
