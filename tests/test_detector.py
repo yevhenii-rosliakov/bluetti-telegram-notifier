@@ -408,6 +408,41 @@ def test_high_load_on_battery_debounced_once_per_outage() -> None:
     assert kinds(events) == ["GridLost", "HighLoad"]
 
 
+def test_high_load_minutes() -> None:
+    cfg = replace(ATS, high_load_for=timedelta(minutes=4))
+    heater = make_sample(grid=0, ac=1800, soc=80)
+    # A kettle: below the threshold again before 4 minutes; the timer starts over.
+    s, events = run(cfg, [ON_BATTERY, heater, heater, heater, heater, ON_BATTERY])
+    assert kinds(events) == ["BotStartedOnBattery"]
+    # A heater, first seen at minute 10; a failed poll does not reset the timer.
+    s, events = run(cfg, [heater, heater, None, heater, heater, heater], s, start=10)
+    assert [(m, type(e)) for m, e in events] == [(14, HighLoad)]
+
+
+def test_high_load_minutes_still_needs_debounce_polls() -> None:
+    cfg = replace(ATS, high_load_for=timedelta(seconds=30), debounce_polls=3)
+    heater = make_sample(grid=0, ac=1800, soc=80)
+    _, events = run(cfg, [ON_BATTERY, heater, heater, heater])
+    assert [(m, type(e)) for m, e in events if m] == [(3, HighLoad)]
+
+
+def test_high_load_minutes_start_over_after_restart_or_offline() -> None:
+    cfg = replace(ATS, high_load_for=timedelta(minutes=4))
+    heater = make_sample(grid=0, ac=1800, soc=80)
+    s, _ = run(cfg, [ON_BATTERY, heater, heater])
+    assert s.high_load_since == at(1)
+    assert DeviceState.from_dict(s.to_dict()) == s
+
+    restarted = replace(s, baseline_pending=True)
+    _, events = run(cfg, [heater] * 5, restarted, start=60)
+    assert [m for m, e in events if isinstance(e, HighLoad)] == [64]
+
+    s, _ = run(cfg, [None] * 12, s, start=3)
+    assert s.offline_notified
+    _, events = run(cfg, [heater] * 5, s, start=60)
+    assert [m for m, e in events if isinstance(e, HighLoad)] == [64]
+
+
 def test_high_load_counts_ac_and_dc() -> None:
     _, events = run(ATS, [make_sample(grid=0, ac=600, dc=500, soc=90)] * 3)
     assert "HighLoad" in kinds(events)

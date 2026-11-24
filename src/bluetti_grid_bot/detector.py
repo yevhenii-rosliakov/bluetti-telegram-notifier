@@ -41,6 +41,8 @@ class DetectorConfig:
     alert_ac_off: bool = True
     # Alert when the load on battery stays at or above this many watts; 0 disables.
     high_load_w: float = 1000.0
+    # ... for at least this long (and ``debounce_polls`` polls).
+    high_load_for: timedelta = timedelta(0)
     # Report when the battery reaches this SOC after grid power came back; 0 disables.
     full_charge_soc: int = 100
 
@@ -74,6 +76,7 @@ class DeviceState:
     ac_off_count: int = 0
     ac_off_alerted: bool = False
     high_load_count: int = 0
+    high_load_since: datetime | None = None
     high_load_alerted: bool = False
     # Grid came back with the battery below ``full_charge_soc``: report when it is full.
     charging_since: datetime | None = None
@@ -118,6 +121,7 @@ class DeviceState:
                 "unreachable_since",
                 "gap_start",
                 "charging_since",
+                "high_load_since",
             ):
                 value = datetime.fromisoformat(value)
             elif name == "low_soc_fired":
@@ -244,6 +248,7 @@ def _baseline(
     s.power = observed
     s.baseline_pending = False
     s.gap_start = None
+    s.high_load_since = None  # the load while the bot was down is unknown
     _reset_candidate(s)
     return events
 
@@ -318,17 +323,23 @@ def _low_soc(s: DeviceState, reading: Reading, cfg: DetectorConfig) -> list[Even
     return [LowBattery(s.sn, min(crossed), soc, reading.dsg_minutes)]
 
 
-def _high_load(s: DeviceState, reading: Reading, cfg: DetectorConfig) -> list[Event]:
+def _high_load(s: DeviceState, reading: Reading, cfg: DetectorConfig, now: datetime) -> list[Event]:
     load = _load(reading)
     if not cfg.high_load_w or s.power is not GridState.BATTERY or load is None:
         s.high_load_count = 0
+        s.high_load_since = None
         return []
     if load < cfg.high_load_w:
         s.high_load_count = 0
+        s.high_load_since = None
         return []
     s.high_load_count += 1
+    if s.high_load_since is None:
+        s.high_load_since = now
     # Once per outage: a heater's thermostat switching it on and off must not spam.
     if s.high_load_alerted or s.high_load_count < cfg.debounce_polls:
+        return []
+    if now - s.high_load_since < cfg.high_load_for:
         return []
     s.high_load_alerted = True
     return [HighLoad(s.sn, load, reading.soc, reading.dsg_minutes)]
@@ -375,6 +386,7 @@ def evaluate(
         if s.offline_notified:
             events.append(StationOnline(s.sn, now, s.unreachable_since))
             s.gap_start = prev_seen
+            s.high_load_since = None
         s.unreachable_since = None
         s.offline_notified = False
     s.last_seen_at = now
@@ -392,7 +404,7 @@ def evaluate(
 
     if not s.baseline_pending:
         events += _low_soc(s, reading, cfg)
-        events += _high_load(s, reading, cfg)
+        events += _high_load(s, reading, cfg, now)
         events += _full_charge(s, reading, cfg, now)
     events += _ac_off(s, reading, cfg, now)
     return Result(s, events, observed)

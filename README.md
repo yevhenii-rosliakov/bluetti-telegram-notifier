@@ -360,6 +360,7 @@ the bot at startup with a message naming the variable. See [.env.example](.env.e
 | `OFFLINE_GRACE_SECONDS` | `600` | no data this long → "station offline" |
 | `LOW_SOC_THRESHOLDS` | `50,25` | empty disables |
 | `HIGH_LOAD_W` | `1000` | on battery, alert when the load stays at or above this, once per outage; `0` disables |
+| `HIGH_LOAD_MINUTES` | `0` | how long the load must stay that high before the alert, e.g. `4` to ignore a kettle; `0`: after `DEBOUNCE_POLLS` polls |
 | `ALERT_AC_OFF` | `true` | |
 | `NOTIFY_STARTUP` | `true` | "Bot started" message when the grid is present, or on battery during an outage already reported |
 | `FULL_CHARGE_SOC` | `100` | "battery charged" after an outage at this %; `0` disables |
