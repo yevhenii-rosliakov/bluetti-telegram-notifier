@@ -15,7 +15,8 @@ All notable changes to this project are documented here. The format follows
   `stations.<id>.schedule`), for stations in different places. Each defaults to the global
   `SCHEDULE_*`; schedule messages name the stations when there are several schedules.
 - High load alert on battery, e.g. a heater left on when the power went out (`HIGH_LOAD_W`,
-  default 1000 W; once per outage, after `DEBOUNCE_POLLS` polls).
+  default 1000 W; once per outage, after `DEBOUNCE_POLLS` polls). `HIGH_LOAD_MINUTES` sets how
+  long the load must stay high first, e.g. 4 minutes to ignore a kettle.
 - `/status` shows outage statistics for the last 7 days: number of outages, total time
   without power (and the share of time with power), longest outage.
 - `/stats [days]`: outage statistics (default 30 days) with a breakdown by day and by hour.

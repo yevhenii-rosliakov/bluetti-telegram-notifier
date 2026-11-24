@@ -29,12 +29,14 @@ def test_defaults(tmp_path: Path) -> None:
     assert s.detection_mode is DetectionMode.ATS
     assert s.low_soc_thresholds == [50, 25]
     assert s.high_load_w == 1000
+    assert s.high_load_minutes == 0
     assert s.bot_language == "uk"
     assert s.state_dir == Path("/data")
     assert s.tz == "UTC"
     cfg = s.detector_config()
     assert cfg.offline_grace == timedelta(minutes=10)
     assert cfg.debounce_polls == 2
+    assert cfg.high_load_for == timedelta(0)
 
 
 def test_from_environment(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -49,10 +51,12 @@ def test_from_environment(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> No
         "TZ": "Europe/Kyiv",
         "STATE_DIR": str(tmp_path),
         "ALERT_AC_OFF": "false",
+        "HIGH_LOAD_MINUTES": "4",
     }
     for k, v in env.items():
         monkeypatch.setenv(k, v)
     s = load_settings(_env_file=None)
+    assert s.detector_config().high_load_for == timedelta(minutes=4)
     assert s.telegram_chat_ids == [111, -1002223334445]
     assert s.allowed_chat_ids == frozenset({111, -1002223334445})
     assert s.bluetti_device_sns == ["SN1", "SN2"]

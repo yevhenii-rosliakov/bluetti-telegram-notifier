@@ -174,6 +174,7 @@ class Settings(BaseSettings):
     offline_grace_seconds: int = Field(default=600, ge=0)
     low_soc_thresholds: CsvInt = Field(default_factory=lambda: [50, 25])
     high_load_w: float = Field(default=1000.0, ge=0)
+    high_load_minutes: float = Field(default=0.0, ge=0, le=1440)
     alert_ac_off: bool = True
     notify_startup: bool = True
     full_charge_soc: int = Field(default=100, ge=0, le=100)
@@ -491,6 +492,7 @@ class Settings(BaseSettings):
             low_soc_thresholds=tuple(self.low_soc_thresholds),
             alert_ac_off=self.alert_ac_off,
             high_load_w=self.high_load_w,
+            high_load_for=timedelta(minutes=self.high_load_minutes),
             full_charge_soc=self.full_charge_soc,
         )
 
