@@ -81,8 +81,6 @@ class StationView:
     last_poll: datetime | None
     # Outages overlapping the statistics window; None = do not show statistics.
     recent_outages: Sequence[Outage] | None = None
-    # Median outage length lately, for the "will the battery last" hint.
-    typical_outage: timedelta | None = None
 
 
 class Formatter:
@@ -281,8 +279,6 @@ class Formatter:
                 lines.append(
                     t("status_runtime", runtime=self.duration(timedelta(minutes=r.dsg_minutes)))
                 )
-            if effective is GridState.BATTERY and s.power_since:
-                lines += self.runtime_hint(r.dsg_minutes, now - s.power_since, v.typical_outage)
             lines.append(t("status_ac_load", value=_num(r.ac_load_w)))
             if r.dc_load_w:
                 lines.append(t("status_dc_load", value=_num(r.dc_load_w)))
@@ -317,22 +313,6 @@ class Formatter:
             ),
             t("stats_longest", duration=approx + self.duration(s.longest)),
         ]
-
-    def runtime_hint(
-        self, runtime_min: int | None, elapsed: timedelta, typical: timedelta | None
-    ) -> list[str]:
-        """Compare the battery runtime with how long outages usually last."""
-        t = self.t
-        if typical is None:
-            return []
-        lines = [t("hint_typical", duration=self.duration(typical))]
-        remaining = typical - elapsed
-        if remaining <= timedelta(minutes=1):
-            lines.append(t("hint_longer_than_usual"))
-        elif runtime_min:
-            key = "hint_enough" if timedelta(minutes=runtime_min) >= remaining else "hint_short"
-            lines.append(t(key, remaining=self.duration(remaining)))
-        return lines
 
     # /stats
 
