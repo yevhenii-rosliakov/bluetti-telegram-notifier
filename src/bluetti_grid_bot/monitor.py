@@ -386,10 +386,9 @@ class Monitor:
         r = self.readings.get(st.sn) if self._fresh(last, now) else None
         r = r or Reading()
         put(m.soc, r.soc, *labels)
-        # 0 minutes means "no estimate".
-        runtime = r.dsg_minutes if state.effective is GridState.BATTERY else None
+        runtime = r.runtime_min if state.effective is GridState.BATTERY else None
         put(m.runtime, runtime * 60 if runtime else None, *labels)
-        put(m.time_to_full, r.chg_minutes * 60 if r.chg_minutes else None, *labels)
+        put(m.time_to_full, r.time_to_full_min * 60 if r.time_to_full_min else None, *labels)
         for channel, watts in (
             ("grid", r.grid_w),
             ("ac_load", r.ac_load_w),

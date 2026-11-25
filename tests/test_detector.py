@@ -108,6 +108,24 @@ def test_classify_grid_input(grid: float | None, expected: GridState | None) -> 
     assert classify(Reading(grid_w=grid, ac_load_w=100), GRID_IN, None).state is expected
 
 
+@pytest.mark.parametrize(
+    ("reading", "power", "expected"),
+    [
+        (Reading(grid_w=0, ac_load_w=0, soc=97), GridState.BATTERY, GridState.BATTERY),
+        (Reading(grid_w=0, ac_load_w=0, soc=98), GridState.BATTERY, GridState.GRID),  # full
+        (Reading(grid_w=300, ac_load_w=0, soc=50), GridState.BATTERY, GridState.GRID),
+        (Reading(grid_w=0, ac_load_w=0, soc=50), GridState.GRID, GridState.GRID),
+        (Reading(grid_w=0, ac_load_w=0, soc=50), GridState.UNKNOWN, GridState.GRID),
+        (Reading(grid_w=0, ac_load_w=0), GridState.BATTERY, GridState.GRID),  # SOC unknown
+        (Reading(ac_load_w=0, soc=50), GridState.BATTERY, GridState.GRID),  # grid unknown
+    ],
+)
+def test_classify_ats_no_load_during_outage(
+    reading: Reading, power: GridState, expected: GridState
+) -> None:
+    assert classify(reading, ATS, None, power).state is expected
+
+
 def test_classify_has_reason() -> None:
     c = classify(Reading(grid_w=0, ac_load_w=10), ATS, None)
     assert "AC load 10 W" in c.reason
@@ -612,3 +630,45 @@ def test_grid_lost_carries_runtime() -> None:
     ((_, ev),) = events
     assert isinstance(ev, GridLost)
     assert ev.runtime_min == 300
+
+
+# a small load reported as 0 W during an outage
+
+
+def test_zero_load_without_charging_is_not_a_restore() -> None:
+    # Real readings from 2026-11-25, 20:15-20:20: one outage, reported as three.
+    loads = [154, 81, 0, 0, 81, 81, 83, 0, 0, 83, 113]
+    s = baseline(ATS, GRID_IDLE)
+    s, _ = run(ATS, [ON_BATTERY, ON_BATTERY], s, start=1)
+    s, events = run(ATS, [make_sample(grid=0, ac=w, soc=91) for w in loads], s, start=3)
+    assert events == []
+    assert s.power is GridState.BATTERY
+    assert s.power_since == at(1)
+
+    # The grid is back when the station starts charging.
+    charging = make_sample(grid=1204, ac=0, soc=91)
+    s, events = run(ATS, [make_sample(grid=0, ac=0, soc=91), charging, charging], s, start=14)
+    ((_, ev),) = events
+    assert isinstance(ev, GridRestored)
+    assert (ev.at, ev.outage_start) == (at(15), at(1))
+
+
+def test_restart_during_zero_load_keeps_the_outage() -> None:
+    s = baseline(ATS, GRID_IDLE)
+    s, _ = run(ATS, [ON_BATTERY, ON_BATTERY], s, start=1)
+    s = replace(s, baseline_pending=True)
+    s, events = run(ATS, [make_sample(grid=0, ac=0, soc=91)] * 2, s, start=3)
+    assert kinds(events) == ["BotStartedOnBattery"]
+    assert s.power_since == at(1)
+
+
+def test_no_load_runtime_is_not_an_estimate() -> None:
+    s = baseline(ATS, GRID_IDLE)
+    sample = make_sample(grid=0, ac=81, soc=91, DsgFullTime="5994")
+    _, events = run(ATS, [sample, sample], s, start=1)
+    ((_, ev),) = events
+    assert isinstance(ev, GridLost)
+    assert ev.runtime_min is None
+    assert Reading(dsg_minutes=5994, chg_minutes=5994).time_to_full_min is None
+    assert Reading(dsg_minutes=1398, chg_minutes=18).time_to_full_min == 18
+    assert Reading(dsg_minutes=0).runtime_min is None

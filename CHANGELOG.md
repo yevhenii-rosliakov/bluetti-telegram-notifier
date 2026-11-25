@@ -52,6 +52,12 @@ All notable changes to this project are documented here. The format follows
 - Station metrics have a new label `station_id`, so stations with the same name stay apart.
   Counters start at 0, so `increase()` sees the first event.
 
+### Fixed
+- `ats` mode: a small load that the station reports as 0 W no longer counts as "power is back"
+  during an outage. Below 98 % SOC the outage ends only when the station starts charging.
+- The runtime estimate is hidden while the station has none (it reports 5994 minutes, shown
+  as "4 d 3 h"). The same goes for the runtime and time to full metrics.
+
 ## [0.1.0] - 2026-11-20
 
 ### Added

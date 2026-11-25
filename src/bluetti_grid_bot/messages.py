@@ -275,9 +275,9 @@ class Formatter:
         if r is not None:
             if r.soc is not None:
                 lines.append(t("status_soc", soc=_num(r.soc)))
-            if r.dsg_minutes and effective is GridState.BATTERY:
+            if r.runtime_min and effective is GridState.BATTERY:
                 lines.append(
-                    t("status_runtime", runtime=self.duration(timedelta(minutes=r.dsg_minutes)))
+                    t("status_runtime", runtime=self.duration(timedelta(minutes=r.runtime_min)))
                 )
             lines.append(t("status_ac_load", value=_num(r.ac_load_w)))
             if r.dc_load_w:

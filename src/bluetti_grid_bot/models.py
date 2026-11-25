@@ -40,6 +40,15 @@ _INT_FIELDS = {
 }
 
 
+# DsgFullTime / ChgFullTime of a station with nothing to estimate from (99.9 h). It stays for
+# a few polls after the load is back.
+_NO_ESTIMATE_MINUTES = 5994
+
+
+def _estimate(minutes: int | None) -> int | None:
+    return minutes if minutes and 0 < minutes < _NO_ESTIMATE_MINUTES else None
+
+
 @dataclass(frozen=True, slots=True)
 class Reading:
     """The fields of a ``deviceStates`` answer the bot understands. ``None`` = unknown."""
@@ -56,6 +65,16 @@ class Reading:
     dsg_minutes: int | None = None
     chg_minutes: int | None = None
     work_mode: str | None = None
+
+    @property
+    def runtime_min(self) -> int | None:
+        """Minutes to empty; ``None`` = no estimate."""
+        return _estimate(self.dsg_minutes)
+
+    @property
+    def time_to_full_min(self) -> int | None:
+        """Minutes to full; ``None`` = no estimate."""
+        return _estimate(self.chg_minutes)
 
 
 def _to_float(value: str) -> float | None:
