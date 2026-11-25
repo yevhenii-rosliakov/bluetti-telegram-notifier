@@ -1,0 +1,24 @@
+{{- if .Values.metrics.dashboard.enabled }}
+{{- if not .Values.metrics.enabled }}
+{{- fail "metrics.dashboard.enabled requires metrics.enabled=true" }}
+{{- end }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "bgb.fullname" . | trunc 53 | trimSuffix "-" }}-dashboard
+  {{- with .Values.metrics.dashboard.namespace }}
+  namespace: {{ . }}
+  {{- end }}
+  labels:
+    {{- include "bgb.labels" . | nindent 4 }}
+    {{- with .Values.metrics.dashboard.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- with .Values.metrics.dashboard.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+data:
+  bluetti-grid-bot.json: |
+    {{- .Files.Get "dashboards/bluetti-grid-bot.json" | nindent 4 }}
+{{- end }}

@@ -24,7 +24,7 @@ from .events import (
     GridRestored,
     OutageEndedUnobserved,
 )
-from .health import Metrics
+from .health import Metrics, put, station_id
 from .messages import Formatter, StationView
 from .models import GridState, Reading, Sample, Station, parse_reading
 from .schedule import KYIV, ScheduleService, day_fingerprints
@@ -88,6 +88,8 @@ class Monitor:
         self.readings: dict[str, Reading] = {}
         self.online: dict[str, bool] = {}
         self.last_data: dict[str, datetime] = {}
+        # Last time the cloud answered for the station at all, also "offline".
+        self.last_answer: dict[str, datetime] = {}
         self.last_success: datetime | None = None
         self.sites = {site.id: site for site in settings.sites}
         # Sites whose login is rejected; "" is the single-account login.
@@ -141,6 +143,7 @@ class Monitor:
         self.stations = [*self.stations, *stations]
         self.formatter.names = {s.sn: s.name for s in self.stations}
         for st in stations:
+            self.metrics.add_station(st.name, st.sn)
             state, raw, polled_at = self.storage.load_device(st.sn)
             # Every process start re-baselines silently (see detector._baseline).
             self.states[st.sn] = replace(state or DeviceState(st.sn), baseline_pending=True)
@@ -180,6 +183,7 @@ class Monitor:
     async def _process(self, st: Station, sample: Sample | None, now: datetime) -> None:
         if sample is not None:
             self.online[st.sn] = sample.online and not sample.placeholder
+            self.last_answer[st.sn] = now
             if sample.placeholder and st.sn not in self._placeholder:
                 log.warning("%s: placeholder answer (SOC 0 %%, every power 0); no data", st.sn)
             if sample.placeholder:
@@ -206,7 +210,6 @@ class Monitor:
             sample.raw if has_data and sample is not None else None,
             now if has_data else None,
         )
-        self._update_metrics(st, result.state)
         if result.observed is not None:
             log.debug("%s: %s (%s)", st.sn, result.observed.state, result.observed.reason)
         for event in result.events:
@@ -215,7 +218,7 @@ class Monitor:
     async def _handle(self, event: Event, now: datetime) -> None:
         log.info("Event: %s", type(event).__name__)
         self.metrics.events.labels(
-            self.formatter.names.get(event.sn, ""), type(event).__name__
+            self.formatter.names.get(event.sn, ""), station_id(event.sn), type(event).__name__
         ).inc()
         match event:
             case GridLost():
@@ -370,23 +373,43 @@ class Monitor:
         text = self.formatter.schedule_warning(slot, schedule.group, views, now)
         await self.sender.broadcast(self.formatter.labelled(label, text))
 
-    def _update_metrics(self, st: Station, state: DeviceState) -> None:
-        label = st.name
+    # metrics
+
+    def render_metrics(self) -> bytes:
+        # Station values are set on every scrape, so they also expire when polling fails.
+        now = self._now()
+        for st in self.stations:
+            self._update_metrics(st, now)
+        return self.metrics.render()
+
+    def _update_metrics(self, st: Station, now: datetime) -> None:
+        m, labels, state = self.metrics, (st.name, station_id(st.sn)), self.states[st.sn]
         for gs in GridState:
-            self.metrics.grid_state.labels(label, gs.value).set(1 if state.effective is gs else 0)
-        if (online := self.online.get(st.sn)) is not None:
-            self.metrics.online.labels(label).set(1 if online else 0)
-        if (r := self.readings.get(st.sn)) is not None:
-            if r.soc is not None:
-                self.metrics.soc.labels(label).set(r.soc)
-            for channel, value in (
-                ("grid", r.grid_w),
-                ("ac_load", r.ac_load_w),
-                ("dc_load", r.dc_load_w),
-                ("pv", r.pv_w),
-            ):
-                if value is not None:
-                    self.metrics.power.labels(label, channel).set(value)
+            m.grid_state.labels(*labels, gs.value).set(1 if state.effective is gs else 0)
+        since = None if state.effective is GridState.UNKNOWN else state.power_since
+        put(m.grid_state_since, None if since is None else since.timestamp(), *labels)
+        if (last := self.last_data.get(st.sn)) is not None:
+            m.last_data.labels(*labels).set(last.timestamp())
+        # Like /readyz, short gaps are bridged; after that old values are not exposed.
+        online = self.online.get(st.sn) if self._fresh(self.last_answer.get(st.sn), now) else None
+        put(m.online, online, *labels)
+        r = self.readings.get(st.sn) if self._fresh(last, now) else None
+        r = r or Reading()
+        put(m.soc, r.soc, *labels)
+        # 0 minutes means "no estimate".
+        runtime = r.dsg_minutes if state.effective is GridState.BATTERY else None
+        put(m.runtime, runtime * 60 if runtime else None, *labels)
+        put(m.time_to_full, r.chg_minutes * 60 if r.chg_minutes else None, *labels)
+        for channel, watts in (
+            ("grid", r.grid_w),
+            ("ac_load", r.ac_load_w),
+            ("dc_load", r.dc_load_w),
+            ("pv", r.pv_w),
+        ):
+            put(m.power, watts, *labels, channel)
+        for output, on, eco in (("ac", r.ac_on, r.ac_eco), ("dc", r.dc_on, r.dc_eco)):
+            put(m.output_on, on, *labels, output)
+            put(m.output_eco, eco, *labels, output)
 
     # auth notifications
 
@@ -405,6 +428,7 @@ class Monitor:
                 if site not in errors:
                     await self._auth_ok(site)
         self._auth_blocked = failed and set(self.sites) <= self.expired_sites
+        self.metrics.set_logins(self.sites, self.expired_sites)
 
     def _site(self, site: str) -> Site:
         return self.sites.get(site) or Site(site)
@@ -475,11 +499,11 @@ class Monitor:
             if sample is None:
                 continue
             self.online[st.sn] = sample.online and not sample.placeholder
+            self.last_answer[st.sn] = now
             if sample.has_data:
                 self.readings[st.sn] = sample.reading
                 self.last_data[st.sn] = now
                 self.storage.save_device(self.states[st.sn], sample.raw, now)
-            self._update_metrics(st, self.states[st.sn])
 
     def status_text(self) -> str:
         return self.formatter.status(
@@ -515,7 +539,8 @@ class Monitor:
         return self._monotonic() - self._heartbeat < budget
 
     def ready(self) -> bool:
+        return self._fresh(self.last_success, self._now())
+
+    def _fresh(self, at: datetime | None, now: datetime) -> bool:
         window = max(3 * self.settings.poll_interval_seconds, 300)
-        if self.last_success is None:
-            return False
-        return (self._now() - self.last_success).total_seconds() < window
+        return at is not None and (now - at).total_seconds() < window

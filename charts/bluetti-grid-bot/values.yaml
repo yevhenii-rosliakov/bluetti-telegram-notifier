@@ -107,6 +107,14 @@ metrics:
     interval: 60s
     scrapeTimeout: 10s
     labels: {}
+  # ConfigMap with the Grafana dashboard, for the Grafana sidecar.
+  dashboard:
+    enabled: false
+    # "" = release namespace.
+    namespace: ""
+    labels:
+      grafana_dashboard: "1"
+    annotations: {}
 
 service:
   # Created automatically when metrics.serviceMonitor.enabled is true.

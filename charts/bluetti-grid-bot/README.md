@@ -350,6 +350,10 @@ can be added here, except the ones the chart sets itself (`STATE_DIR`, `HTTP_POR
 | `metrics.serviceMonitor.interval` | `60s` | |
 | `metrics.serviceMonitor.scrapeTimeout` | `10s` | |
 | `metrics.serviceMonitor.labels` | `{}` | E.g. `release: prometheus` for kube-prometheus-stack. |
+| `metrics.dashboard.enabled` | `false` | Create a ConfigMap with the Grafana dashboard (needs `metrics.enabled`). |
+| `metrics.dashboard.namespace` | `""` | Namespace the Grafana sidecar watches; `""` = release namespace. |
+| `metrics.dashboard.labels` | `grafana_dashboard: "1"` | Label the Grafana sidecar looks for. |
+| `metrics.dashboard.annotations` | `{}` | E.g. `grafana_folder: Home`. |
 | `service.enabled` | `false` | ClusterIP Service for the HTTP port. |
 | `service.type` / `service.port` | `ClusterIP` / `8080` | |
 | `serviceAccount.create` | `true` | |
@@ -373,7 +377,13 @@ metrics:
     enabled: true
     labels:
       release: prometheus
+  dashboard:
+    enabled: true
 ```
+
+Without the sidecar, import [the dashboard](dashboards/bluetti-grid-bot.json) into Grafana by hand.
+The metrics are listed in the
+[main README](https://github.com/yevhenii-rosliakov/bluetti-telegram-notifier#health-and-metrics).
 
 ## Several stations
 

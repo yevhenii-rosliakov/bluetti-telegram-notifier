@@ -322,7 +322,9 @@ async def test_health_endpoints() -> None:
     metrics = Metrics()
     metrics.polls.labels("ok").inc()
     state = {"ready": False}
-    server = HealthServer(0, alive=lambda: True, ready=lambda: state["ready"], metrics=metrics)
+    server = HealthServer(
+        0, alive=lambda: True, ready=lambda: state["ready"], metrics=metrics.render
+    )
     async with TestClient(TestServer(server.app())) as client:
         assert (await client.get("/healthz")).status == 200
         assert (await client.get("/readyz")).status == 503
