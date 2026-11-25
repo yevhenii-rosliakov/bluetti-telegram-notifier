@@ -28,7 +28,6 @@ from .health import Metrics, put, station_id
 from .messages import Formatter, StationView
 from .models import GridState, Reading, Sample, Station, parse_reading
 from .schedule import KYIV, ScheduleService, day_fingerprints
-from .stats import typical_duration
 from .storage import Outage, Storage, scoped
 
 log = logging.getLogger(__name__)
@@ -42,8 +41,6 @@ REFRESH_MIN_INTERVAL_S = 10.0
 REFRESH_TIMEOUT_S = 25.0
 # /status shows outage statistics for this many last days.
 STATS_DAYS = 7
-# "Outages usually last ..." is the median over this many last days.
-TYPICAL_DAYS = 30
 # A weekly summary is skipped if the bot was not running at that time for longer than this.
 WEEKLY_LATE_MAX = timedelta(hours=12)
 # An outage starting this close to a planned slot counts as planned.
@@ -243,14 +240,12 @@ class Monitor:
                 pass
         text = self.formatter.event(event, now)
         if text and isinstance(event, GridLost):
-            text = "\n".join([text, *self._grid_lost_extra(event, now)])
+            text = "\n".join([text, *self._grid_lost_extra(event)])
         if text:
             await self.sender.broadcast(text)
 
-    def _grid_lost_extra(self, event: GridLost, now: datetime) -> list[str]:
-        lines = self.formatter.runtime_hint(
-            event.runtime_min, now - event.at, self._typical(event.sn, now)
-        )
+    def _grid_lost_extra(self, event: GridLost) -> list[str]:
+        lines: list[str] = []
         site = next((st.site for st in self.stations if st.sn == event.sn), "")
         service = self.schedules.get(site)
         if service is not None and service.current is not None:
@@ -258,11 +253,6 @@ class Monitor:
             if match:
                 lines.append(match)
         return lines
-
-    def _typical(self, sn: str, now: datetime) -> timedelta | None:
-        return typical_duration(
-            self.storage.outages_since(now - timedelta(days=TYPICAL_DAYS), [sn])
-        )
 
     # periodic messages
 
@@ -455,11 +445,10 @@ class Monitor:
     def views(self, with_stats: bool = False) -> list[StationView]:
         recent: list[Outage] = []
         if with_stats:
-            since = self._now() - timedelta(days=TYPICAL_DAYS)
+            since = self._now() - timedelta(days=STATS_DAYS)
             recent = self.storage.outages_since(since, [st.sn for st in self.stations])
         views = []
         for st in self.stations:
-            # The formatter cuts these to the STATS_DAYS window.
             own = tuple(o for o in recent if o.sn == st.sn)
             views.append(
                 StationView(
@@ -469,7 +458,6 @@ class Monitor:
                     online=self.online.get(st.sn),
                     last_poll=self.last_data.get(st.sn),
                     recent_outages=own if with_stats else None,
-                    typical_outage=typical_duration(own),
                 )
             )
         return views

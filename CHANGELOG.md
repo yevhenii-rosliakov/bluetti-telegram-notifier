@@ -22,8 +22,6 @@ All notable changes to this project are documented here. The format follows
 - `/stats [days]`: outage statistics (default 30 days) with a breakdown by day and by hour.
 - Weekly summary every Monday at 09:00, compared with the previous week (`WEEKLY_SUMMARY`).
 - "Battery charged" message after an outage (`FULL_CHARGE_SOC`, default 100 %).
-- On battery, "will it last": the battery runtime compared with the typical outage length
-  (median of the last 30 days), in the "power went out" message and in `/status`.
 - Planned outage schedule from Yasno or outage-data-ua (`SCHEDULE_PROVIDER`, `SCHEDULE_REGION`,
   `SCHEDULE_GROUP`): `/schedule`, a warning before a planned outage, messages when a schedule
   is published or changed, "on the schedule" / "not on the schedule" when the power goes out.

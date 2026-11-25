@@ -12,7 +12,6 @@ power station as the sensor. It polls the station through the BLUETTI cloud and 
 - ⚠️ **AC output turned off** while it should be on (ECO mode, or someone switched it off)
 - 📡 **Station offline** / **back online** — reported as "no connection, state unknown", never as an outage or a restoration
 - 🔋 **Battery charged** — when the battery reaches 100 % (`FULL_CHARGE_SOC`) after power came back
-- 📈 **Will the battery last?** — on battery, compares the remaining runtime with how long outages usually last (median of the last 30 days)
 - 📅 **Weekly summary** — every Monday at 09:00 (`WEEKLY_SUMMARY`): outages, time without power, longest outage, compared with the week before
 - ⏰ **Planned outage schedule** (optional, Kyiv / Kyiv region / Dnipro / Odesa) — a warning before a planned outage, a message when a new schedule is published or changed, and "on the schedule" / "not on the schedule" when the power goes out
 

@@ -508,7 +508,7 @@ async def test_schedule_warn_minutes_per_station(tmp_path: Path, storage: Storag
     assert len(sender.sent) == 2
 
 
-async def test_grid_lost_shows_typical_outage(tmp_path: Path, storage: Storage) -> None:
+async def test_grid_lost_has_no_typical_outage_hint(tmp_path: Path, storage: Storage) -> None:
     for i in range(3):
         start = T0 - timedelta(days=i + 1)
         storage.start_outage(SN, start, None)
@@ -519,11 +519,8 @@ async def test_grid_lost_shows_typical_outage(tmp_path: Path, storage: Storage) 
     battery = {SN: make_sample(grid=0, ac=80, soc=90, DsgFullTime="600")}
     await poll(m, src, clock, battery)
     await poll(m, src, clock, battery)
-    assert sender.sent[-1].splitlines()[-2:] == [
-        "📈 Outages usually last ≈ 2 h (median, last 30 days)",
-        "The battery should last until power is back as usual (≈ 1 h 59 min more) ✅",
-    ]
-    assert "Outages usually last ≈ 2 h" in m.status_text()
+    assert sender.sent[-1].splitlines()[-1] == "Estimated runtime: 10 h"
+    assert "median" not in m.status_text()
     assert m.stats_text(30).startswith("📊 Last 30 days\n\nOutages: 4")
 
 

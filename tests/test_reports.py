@@ -191,19 +191,6 @@ def test_weekly_summary() -> None:
     assert "Попередній тиждень: відключень 1, без світла 1 год" in text
 
 
-def test_runtime_hint() -> None:
-    f = fmt()
-    typical = timedelta(hours=3)
-    assert f.runtime_hint(600, timedelta(), None) == []
-    assert f.runtime_hint(600, timedelta(hours=1), typical) == [
-        "📈 Outages usually last ≈ 3 h (median, last 30 days)",
-        "The battery should last until power is back as usual (≈ 2 h more) ✅",
-    ]
-    assert "may run out" in f.runtime_hint(60, timedelta(hours=1), typical)[1]
-    assert "longer than usual" in f.runtime_hint(60, timedelta(hours=4), typical)[1]
-    assert len(f.runtime_hint(None, timedelta(hours=1), typical)) == 1
-
-
 def test_battery_full_and_grid_lost_runtime_messages() -> None:
     f = fmt()
     full = f.event(BatteryFull(SN, 100, at(0), at(130)), at(130))
