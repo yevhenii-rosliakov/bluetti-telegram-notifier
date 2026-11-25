@@ -163,7 +163,7 @@ async def run_service(s: Settings) -> int:
             s.http_port,
             alive=monitor.alive,
             ready=monitor.ready,
-            metrics=metrics if s.metrics_enabled else None,
+            metrics=monitor.render_metrics if s.metrics_enabled else None,
         )
 
         stop = asyncio.Event()

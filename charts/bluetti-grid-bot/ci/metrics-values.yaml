@@ -4,6 +4,11 @@ metrics:
     enabled: true
     labels:
       release: prometheus
+  dashboard:
+    enabled: true
+    namespace: monitoring
+    annotations:
+      grafana_folder: Home
 persistence:
   existingClaim: bluetti-data
 config:

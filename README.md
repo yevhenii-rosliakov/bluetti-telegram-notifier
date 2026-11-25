@@ -426,7 +426,7 @@ how to mount the PVC or use PostgreSQL, and every setting.
   [chart README](charts/bluetti-grid-bot/README.md#several-stations).
 - Runs as UID 10001 with a read-only root filesystem, all capabilities dropped, probes on
   `/healthz` and `/readyz`. `metrics.enabled` + `metrics.serviceMonitor.enabled` add a
-  Service and a `ServiceMonitor`.
+  Service and a `ServiceMonitor`; `metrics.dashboard.enabled` adds the Grafana dashboard.
 - The pod reports NotReady until the first successful poll (e.g. before `login`); `kubectl
   exec` still works.
 
@@ -525,10 +525,47 @@ With Helm: scale the Deployment to 0, copy the PVC contents to the new cluster's
 
 - `GET /healthz` — 200 while the polling loop is alive.
 - `GET /readyz` — 200 if a poll succeeded within the last `max(3 × POLL_INTERVAL_SECONDS, 300)` s.
-- `GET /metrics` (with `METRICS_ENABLED=true`) — `bluetti_polls_total`, `bluetti_grid_state`,
-  `bluetti_battery_soc_percent`, `bluetti_power_watts{channel=grid|ac_load|dc_load|pv}`,
-  `bluetti_station_online`, `bluetti_events_total`, `bluetti_notifications_total`,
-  `bluetti_last_successful_poll_timestamp_seconds`.
+- `GET /metrics` (with `METRICS_ENABLED=true`) — Prometheus metrics:
+
+| Metric | Labels | |
+|---|---|---|
+| `bluetti_grid_state` | `state=grid\|battery\|unknown` | 1 for the current state |
+| `bluetti_grid_state_since_timestamp_seconds` | | when that state began; absent while unknown |
+| `bluetti_station_online` | | cloud online flag; absent if the cloud does not answer |
+| `bluetti_station_last_data_timestamp_seconds` | | last poll with data from the station |
+| `bluetti_battery_soc_percent` | | |
+| `bluetti_battery_runtime_seconds` | | the station's estimate, only on battery |
+| `bluetti_battery_time_to_full_seconds` | | the station's estimate, only while charging |
+| `bluetti_power_watts` | `channel=grid\|ac_load\|dc_load\|pv` | |
+| `bluetti_output_on`, `bluetti_output_eco` | `output=ac\|dc` | output switch, ECO mode |
+| `bluetti_events_total` | `type` | detector events, e.g. `GridLost` |
+| `bluetti_login_expired` | `site` | 1 if the BLUETTI login is rejected |
+| `bluetti_polls_total` | `result` | `ok` if at least one login answered |
+| `bluetti_last_successful_poll_timestamp_seconds` | | |
+| `bluetti_notifications_total` | `result` | Telegram messages |
+
+The rows down to `bluetti_events_total` also have `station` (its name) and `station_id`, a
+short hash of the serial number that stays the same when the station is renamed. Battery, power and
+output values disappear after `max(3 × POLL_INTERVAL_SECONDS, 300)` s without data, so a graph has a
+gap instead of a flat line.
+
+### Grafana dashboard
+
+Import [bluetti-grid-bot.json](charts/bluetti-grid-bot/dashboards/bluetti-grid-bot.json) in Grafana
+(Dashboards → New → Import) and choose your Prometheus data source. With Helm,
+`metrics.dashboard.enabled` creates it as a ConfigMap for the Grafana sidecar. Without Helm,
+publish the port (see `docker-compose.yml`) and add a scrape job:
+
+```yaml
+scrape_configs:
+  - job_name: bluetti-grid-bot
+    scrape_interval: 60s
+    static_configs:
+      - targets: ["bot-host:8080"]
+```
+
+The exact outage history is in `/stats` and `/history`; the dashboard only counts what Prometheus
+has scraped. `/metrics` has no authentication, so do not expose the port to the internet.
 
 ## Troubleshooting
 

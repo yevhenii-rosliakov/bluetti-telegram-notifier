@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
+from typing import get_args
 
 from aiohttp import web
 from prometheus_client import (
@@ -14,7 +16,24 @@ from prometheus_client import (
     generate_latest,
 )
 
+from .events import Event
+
 log = logging.getLogger(__name__)
+
+_STATION = ("station", "station_id")
+
+
+def station_id(sn: str) -> str:
+    """Stable id of a station for labels: survives a rename and does not reveal the serial."""
+    return hashlib.sha256(sn.encode()).hexdigest()[:8]
+
+
+def put(gauge: Gauge, value: float | None, *labels: str) -> None:
+    """Set the series, or drop it when the value is unknown, so that nothing stale is scraped."""
+    if value is None:
+        gauge.remove(*labels)
+    else:
+        gauge.labels(*labels).set(value)
 
 
 class Metrics:
@@ -32,20 +51,72 @@ class Metrics:
         self.grid_state = Gauge(
             "bluetti_grid_state",
             "1 for the station's current state (grid, battery, unknown)",
-            ["station", "state"],
+            [*_STATION, "state"],
             registry=r,
         )
-        self.online = Gauge("bluetti_station_online", "Cloud online flag", ["station"], registry=r)
-        self.soc = Gauge("bluetti_battery_soc_percent", "Battery SOC", ["station"], registry=r)
+        self.grid_state_since = Gauge(
+            "bluetti_grid_state_since_timestamp_seconds",
+            "Unix time the current grid state began; absent while the state is unknown",
+            _STATION,
+            registry=r,
+        )
+        self.last_data = Gauge(
+            "bluetti_station_last_data_timestamp_seconds",
+            "Unix time of the last poll with data from the station",
+            _STATION,
+            registry=r,
+        )
+        self.online = Gauge("bluetti_station_online", "Cloud online flag", _STATION, registry=r)
+        self.soc = Gauge("bluetti_battery_soc_percent", "Battery SOC", _STATION, registry=r)
+        self.runtime = Gauge(
+            "bluetti_battery_runtime_seconds",
+            "Battery runtime left, as the station estimates it; absent off battery",
+            _STATION,
+            registry=r,
+        )
+        self.time_to_full = Gauge(
+            "bluetti_battery_time_to_full_seconds",
+            "Time until the battery is full, as the station estimates it; absent if not charging",
+            _STATION,
+            registry=r,
+        )
         self.power = Gauge(
-            "bluetti_power_watts", "Power by channel", ["station", "channel"], registry=r
+            "bluetti_power_watts", "Power by channel", [*_STATION, "channel"], registry=r
+        )
+        self.output_on = Gauge(
+            "bluetti_output_on", "1 if the output is on (ac, dc)", [*_STATION, "output"], registry=r
+        )
+        self.output_eco = Gauge(
+            "bluetti_output_eco",
+            "1 if ECO mode is on for the output (ac, dc)",
+            [*_STATION, "output"],
+            registry=r,
+        )
+        self.login_expired = Gauge(
+            "bluetti_login_expired",
+            "1 if the BLUETTI login is rejected; site is empty for a single account",
+            ["site"],
+            registry=r,
         )
         self.events = Counter(
-            "bluetti_events", "Detector events by type", ["station", "type"], registry=r
+            "bluetti_events", "Detector events by type", [*_STATION, "type"], registry=r
         )
         self.notifications = Counter(
             "bluetti_notifications", "Telegram notifications by result", ["result"], registry=r
         )
+        # Counters start at 0: increase() misses the first event of a series that appears at 1.
+        for result in ("ok", "error", "auth_error"):
+            self.polls.labels(result)
+        for result in ("ok", "error"):
+            self.notifications.labels(result)
+
+    def add_station(self, name: str, sn: str) -> None:
+        for event in get_args(Event):
+            self.events.labels(name, station_id(sn), event.__name__)
+
+    def set_logins(self, sites: Iterable[str], expired: set[str]) -> None:
+        for site in sites:
+            self.login_expired.labels(site).set(site in expired)
 
     def render(self) -> bytes:
         return generate_latest(self.registry)
@@ -58,7 +129,7 @@ class HealthServer:
         *,
         alive: Callable[[], bool],
         ready: Callable[[], bool],
-        metrics: Metrics | None,
+        metrics: Callable[[], bytes] | None,
         host: str = "0.0.0.0",  # noqa: S104 - container / pod networking
     ) -> None:
         self._port = port
@@ -96,5 +167,5 @@ class HealthServer:
 
     async def _metrics_handler(self, _: web.Request) -> web.Response:
         assert self._metrics is not None  # noqa: S101 - route only registered with metrics
-        body = self._metrics.render()
+        body = self._metrics()
         return web.Response(body=body, headers={"Content-Type": CONTENT_TYPE_LATEST})

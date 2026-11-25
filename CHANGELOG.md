@@ -35,6 +35,10 @@ All notable changes to this project are documented here. The format follows
   `_DEVICE_SNS` per station; `login --station <id>`, `make login STATION=<id>`). An expired
   login of one station is reported by name and does not stop the others. The Helm chart takes
   them as a `stations` map (`name`, `gateway`, `deviceSns`, `refreshToken` per station).
+- Grafana dashboard (`charts/bluetti-grid-bot/dashboards`); Helm: `metrics.dashboard.enabled`
+  creates a ConfigMap for the Grafana sidecar.
+- Metrics: start of the current grid state, last data per station, battery runtime and time to
+  full, AC / DC output and ECO mode, expired logins.
 
 ### Changed
 - A cloud answer with SOC 0 % and every power reading at 0 is the cloud's placeholder,
@@ -45,6 +49,10 @@ All notable changes to this project are documented here. The format follows
   silent too. "Bot started on battery" is still sent when the outage began while the bot
   was down.
 - `LOW_SOC_THRESHOLDS` defaults to `50,25` (was `30,15`).
+- Metrics of a station without data disappear after `max(3 × POLL_INTERVAL_SECONDS, 300)` s
+  instead of keeping their last value, also after a restart.
+- Station metrics have a new label `station_id`, so stations with the same name stay apart.
+  Counters start at 0, so `increase()` sees the first event.
 
 ## [0.1.0] - 2026-11-20
 

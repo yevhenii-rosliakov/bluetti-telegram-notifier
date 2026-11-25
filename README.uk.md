@@ -405,7 +405,8 @@ kubectl -n bluetti exec -it deploy/bluetti-grid-bot -- bluetti-grid-bot login
   для кожного id станції); чарт сам створить змінні `BLUETTI_<ID>_*`. Див.
   [README чарту](charts/bluetti-grid-bot/README.md#several-stations).
 - UID 10001, файлова система лише для читання, усі capabilities скинуті, проби на `/healthz` і
-  `/readyz`. `metrics.enabled` + `metrics.serviceMonitor.enabled` додають Service і `ServiceMonitor`.
+  `/readyz`. `metrics.enabled` + `metrics.serviceMonitor.enabled` додають Service і `ServiceMonitor`;
+  `metrics.dashboard.enabled` додає дашборд Grafana.
 - Под буде NotReady до першого успішного опитування (наприклад, до `login`); `kubectl exec` при
   цьому працює.
 
@@ -455,6 +456,10 @@ rm bot-data.tgz                            # в архіві є токени
 - `GET /healthz` — 200, поки цикл опитування живий.
 - `GET /readyz` — 200, якщо успішне опитування було протягом `max(3 × POLL_INTERVAL_SECONDS, 300)` с.
 - `GET /metrics` (з `METRICS_ENABLED=true`) — див. [README](README.md#health-and-metrics).
+- Дашборд Grafana: імпортуйте
+  [bluetti-grid-bot.json](charts/bluetti-grid-bot/dashboards/bluetti-grid-bot.json) (Dashboards →
+  New → Import) або ввімкніть `metrics.dashboard.enabled` у Helm. Точна історія відключень — у
+  `/stats` і `/history`. `/metrics` не має автентифікації: не відкривайте порт в інтернет.
 
 ## Якщо щось не працює
 
