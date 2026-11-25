@@ -369,7 +369,11 @@ async def check(s: Settings) -> int:
             if sample.invalid_fields:
                 print(f"  unparseable fields: {', '.join(sample.invalid_fields)}")
             stored, _, _ = c.storage.load_device(st.sn)
-            verdict = classify(r, cfg, stored.soc_at_grid if stored else None)
+            verdict = (
+                classify(r, cfg, stored.soc_at_grid, stored.power)
+                if stored
+                else classify(r, cfg, None)
+            )
             state = verdict.state.value.upper() if verdict.state else "UNDECIDED"
             print(f"  => detector: {state} ({verdict.reason})")
             if r.ac_eco:

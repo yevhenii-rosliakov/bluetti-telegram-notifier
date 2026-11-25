@@ -265,10 +265,14 @@ power through. How to tell an outage apart therefore depends on how the station 
 
 While the grid is present the apartment runs from the grid directly and the station has **no AC
 load**. During an outage the ATS switches to the station and the apartment (router, fridge, …)
-draws from it, so AC load is never zero.
+draws from it. The station may report a small load (below about 80 W on a Premium 200 V2) as
+0 W, so on battery 0 W alone does not mean that power is back.
 
 - on battery: `ACLoadAllTotalPower >= LOAD_THRESHOLD_W` **and** `GridAllTotalPower < GRID_THRESHOLD_W`
 - grid present: `GridAllTotalPower >= GRID_THRESHOLD_W` **or** `ACLoadAllTotalPower < LOAD_THRESHOLD_W`
+- but during an outage, with SOC below 98 %, only `GridAllTotalPower >= GRID_THRESHOLD_W`
+  (the station starts charging) means that power is back. Needs a station that charges to
+  100 %: with a lower charge limit the bot may never report that power is back.
 
 Also fits any setup where nothing is plugged into the station while the grid is present.
 

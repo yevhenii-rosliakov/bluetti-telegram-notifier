@@ -27,6 +27,9 @@ from .events import (
 )
 from .models import DetectionMode, GridState, Reading, Sample
 
+# A station below this SOC charges whenever the grid is present (it tops up from 99 %).
+_CHARGES_BELOW_SOC = 98.0
+
 
 @dataclass(frozen=True, slots=True)
 class DetectorConfig:
@@ -147,8 +150,16 @@ def _fmt(value: float) -> str:
     return f"{value:g}"
 
 
-def classify(reading: Reading, cfg: DetectorConfig, soc_at_grid: float | None) -> Classification:
-    """Decide from one reading whether the station is on grid or on battery."""
+def classify(
+    reading: Reading,
+    cfg: DetectorConfig,
+    soc_at_grid: float | None,
+    power: GridState = GridState.UNKNOWN,
+) -> Classification:
+    """Decide from one reading whether the station is on grid or on battery.
+
+    ``power`` is the last confirmed state.
+    """
     grid_thr, load_thr = cfg.grid_threshold_w, cfg.load_threshold_w
     grid = reading.grid_w
 
@@ -167,6 +178,18 @@ def classify(reading: Reading, cfg: DetectorConfig, soc_at_grid: float | None) -
         if load is None:
             return Classification(None, "ACLoadAllTotalPower unknown")
         if load < load_thr:
+            # The station reports small loads (seen: anything under about 80 W) as 0 W.
+            if (
+                power is GridState.BATTERY
+                and grid is not None
+                and reading.soc is not None
+                and reading.soc < _CHARGES_BELOW_SOC
+            ):
+                return Classification(
+                    GridState.BATTERY,
+                    f"AC load {_fmt(load)} W < {_fmt(load_thr)}, but SOC {_fmt(reading.soc)} % "
+                    "and not charging: still no grid",
+                )
             return Classification(
                 GridState.GRID, f"AC load {_fmt(load)} W < {_fmt(load_thr)}: house runs from grid"
             )
@@ -278,7 +301,7 @@ def _debounce(
     events: list[Event] = []
     if observed is GridState.BATTERY:
         events.append(
-            GridLost(s.sn, at, earliest, reading.soc, _load(reading), reading.dsg_minutes)
+            GridLost(s.sn, at, earliest, reading.soc, _load(reading), reading.runtime_min)
         )
     elif s.power is GridState.BATTERY:
         events.append(
@@ -320,7 +343,7 @@ def _low_soc(s: DeviceState, reading: Reading, cfg: DetectorConfig) -> list[Even
         return []
     s.low_soc_fired = tuple(sorted({*s.low_soc_fired, *crossed}, reverse=True))
     # Several thresholds crossed at once (e.g. bot started at 12 %): one message, the lowest.
-    return [LowBattery(s.sn, min(crossed), soc, reading.dsg_minutes)]
+    return [LowBattery(s.sn, min(crossed), soc, reading.runtime_min)]
 
 
 def _high_load(s: DeviceState, reading: Reading, cfg: DetectorConfig, now: datetime) -> list[Event]:
@@ -342,7 +365,7 @@ def _high_load(s: DeviceState, reading: Reading, cfg: DetectorConfig, now: datet
     if now - s.high_load_since < cfg.high_load_for:
         return []
     s.high_load_alerted = True
-    return [HighLoad(s.sn, load, reading.soc, reading.dsg_minutes)]
+    return [HighLoad(s.sn, load, reading.soc, reading.runtime_min)]
 
 
 def _ac_off(s: DeviceState, reading: Reading, cfg: DetectorConfig, now: datetime) -> list[Event]:
@@ -392,7 +415,7 @@ def evaluate(
     s.last_seen_at = now
 
     reading = sample.reading
-    observed = classify(reading, cfg, s.soc_at_grid)
+    observed = classify(reading, cfg, s.soc_at_grid, s.power)
     if observed.state is GridState.GRID and reading.soc is not None:
         s.soc_at_grid = reading.soc
 
