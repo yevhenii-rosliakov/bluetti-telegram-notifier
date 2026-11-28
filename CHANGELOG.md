@@ -17,6 +17,7 @@ All notable changes to this project are documented here. The format follows
 - High load alert on battery, e.g. a heater left on when the power went out (`HIGH_LOAD_W`,
   default 1000 W; once per outage, after `DEBOUNCE_POLLS` polls). `HIGH_LOAD_MINUTES` sets how
   long the load must stay high first, e.g. 4 minutes to ignore a kettle.
+  `HIGH_LOAD_REPEAT_MINUTES` reminds again every so many minutes while the load is still high.
 - `/status` shows outage statistics for the last 7 days: number of outages, total time
   without power (and the share of time with power), longest outage.
 - `/stats [days]`: outage statistics (default 30 days) with a breakdown by day and by hour.
