@@ -461,6 +461,23 @@ def test_high_load_minutes_start_over_after_restart_or_offline() -> None:
     assert [m for m, e in events if isinstance(e, HighLoad)] == [64]
 
 
+def test_high_load_repeat() -> None:
+    cfg = replace(ATS, high_load_repeat=timedelta(minutes=10))
+    heater = make_sample(grid=0, ac=1800, soc=80)
+    s, events = run(cfg, [GRID_IDLE, ON_BATTERY, ON_BATTERY] + [heater] * 20)
+    assert [m for m, e in events if isinstance(e, HighLoad)] == [4, 14]
+    assert DeviceState.from_dict(s.to_dict()) == s
+
+    # After a pause, the reminder comes once the load is high again (DEBOUNCE_POLLS polls).
+    s, events = run(cfg, [ON_BATTERY] * 10 + [heater] * 4, s, start=23)
+    assert [m for m, e in events if isinstance(e, HighLoad)] == [34]
+
+    # Next outage: the first alert comes without waiting.
+    s, _ = run(cfg, [GRID_IDLE, GRID_IDLE], s, start=37)
+    _, events = run(cfg, [heater] * 3, s, start=39)
+    assert kinds(events) == ["GridLost", "HighLoad"]
+
+
 def test_high_load_counts_ac_and_dc() -> None:
     _, events = run(ATS, [make_sample(grid=0, ac=600, dc=500, soc=90)] * 3)
     assert "HighLoad" in kinds(events)

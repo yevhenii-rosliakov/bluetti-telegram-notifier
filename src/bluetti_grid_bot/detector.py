@@ -46,6 +46,8 @@ class DetectorConfig:
     high_load_w: float = 1000.0
     # ... for at least this long (and ``debounce_polls`` polls).
     high_load_for: timedelta = timedelta(0)
+    # Remind again this long after the last alert while the load is still high; 0 = once.
+    high_load_repeat: timedelta = timedelta(0)
     # Report when the battery reaches this SOC after grid power came back; 0 disables.
     full_charge_soc: int = 100
 
@@ -81,6 +83,7 @@ class DeviceState:
     high_load_count: int = 0
     high_load_since: datetime | None = None
     high_load_alerted: bool = False
+    high_load_alerted_at: datetime | None = None
     # Grid came back with the battery below ``full_charge_soc``: report when it is full.
     charging_since: datetime | None = None
     # passthrough mode: SOC at the last poll that showed grid input.
@@ -125,6 +128,7 @@ class DeviceState:
                 "gap_start",
                 "charging_since",
                 "high_load_since",
+                "high_load_alerted_at",
             ):
                 value = datetime.fromisoformat(value)
             elif name == "low_soc_fired":
@@ -359,12 +363,20 @@ def _high_load(s: DeviceState, reading: Reading, cfg: DetectorConfig, now: datet
     s.high_load_count += 1
     if s.high_load_since is None:
         s.high_load_since = now
-    # Once per outage: a heater's thermostat switching it on and off must not spam.
-    if s.high_load_alerted or s.high_load_count < cfg.debounce_polls:
+    if s.high_load_count < cfg.debounce_polls or now - s.high_load_since < cfg.high_load_for:
         return []
-    if now - s.high_load_since < cfg.high_load_for:
+    # Once per outage, or once per ``high_load_repeat``: a heater's thermostat switching it
+    # on and off must not spam.
+    if s.high_load_alerted and (
+        not cfg.high_load_repeat
+        or (
+            s.high_load_alerted_at is not None
+            and now - s.high_load_alerted_at < cfg.high_load_repeat
+        )
+    ):
         return []
     s.high_load_alerted = True
+    s.high_load_alerted_at = now
     return [HighLoad(s.sn, load, reading.soc, reading.runtime_min)]
 
 
